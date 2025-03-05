@@ -31,7 +31,7 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
 
 # Define the paths
 local_dir = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master"
-input_folder = local_dir"\\saliency_output\\table"  # Folder containing the saliency map images
+input_folder = local_dir+"\\saliency_output\\table"  # Folder containing the saliency map images
 output_video_path = local_dir+"\\saliency_output\\saliency_video_table.mp4"  # Path where the video will be saved
 
 # Create a video from the saliency maps
