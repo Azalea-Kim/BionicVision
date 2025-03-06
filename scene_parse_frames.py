@@ -134,6 +134,11 @@ def get_houghlines(edges):
 output_frames_dir = local_dir+"\\output_frames\\kitchen_try"
 all_frames = glob.glob(output_frames_dir+"\\*.jpg")
 
+W = 10 # store the most recent W frames' edge detection result
+w_count = 0
+edge_rep = np.zeros((1440, 1920, W))
+
+
 for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     # f_name = "\\frame%d.jpg" % count
     f_name = output_frames_dir+"\\frame_%03d.jpg" % count
@@ -327,9 +332,8 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     #
 
 
-    W = 10 # store the most recent W frames' edge detection result
-    w_count = 0
-    edge_rep = np.zeros((height, width, W))
+
+    # Need to change this part to averaging and thresholding
 
     if count <= W: # count is current frame index
         edge_rep[:, :, count - 1] = edges
