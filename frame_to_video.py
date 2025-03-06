@@ -3,6 +3,8 @@ import cv2
 import imageio
 import numpy as np
 
+# 重新push
+
 def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
     frames = []  # Store saliency maps of each frame
 
@@ -14,7 +16,7 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
         frame_path = os.path.join(input_folder, fname)
 
         # Check if the file is a valid image file (you can add more formats if needed)
-        if frame_path.endswith('.jpg') or frame_path.endswith('.png'):
+        if frame_path.endswith('.jpg') or frame_path.endswith('.png') or frame_path.endswith('.jpeg'):
             frame = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)  # Read as grayscale for saliency maps
             if frame is not None:
                 frames.append(frame)
@@ -31,8 +33,15 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
 
 # Define the paths
 local_dir = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master"
-input_folder = local_dir+"\\saliency_output\\table"  # Folder containing the saliency map images
-output_video_path = local_dir+"\\saliency_output\\saliency_video_table.mp4"  # Path where the video will be saved
+# input_folder = local_dir+"\\saliency_output\\kitchen20fps"  # Folder containing the saliency map images
+# output_video_path = local_dir+"\\saliency_output\\saliency_video_kitchen_20fps.mp4"  # Path where the video will be saved
 
+input_folder = local_dir+"\\segmentation_output\\detectron_mask_kitchen_20fps"  # Folder containing the saliency map images
+output_video_path = local_dir+"\\segmentation_output\\segmentation_video_kitchen_20fps.mp4"  # Path where the video will be saved
+
+
+
+input_folder = local_dir+"\\depth_output_npy\\kitchen20fps_monodepth2_frames"
+output_video_path = local_dir+"\\depth_output_npy\\kitchen20fps_monodepth2_frames.mp4"
 # Create a video from the saliency maps
 create_video_from_frames(input_folder, output_video_path)
