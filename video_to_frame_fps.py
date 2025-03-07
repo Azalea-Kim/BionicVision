@@ -1,37 +1,22 @@
 import cv2
 import os
 
-def video_to_frames(video_path, output_folder, target_fps=20):
-    video_capture = cv2.VideoCapture(video_path)
-
-    total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    fps = video_capture.get(cv2.CAP_PROP_FPS)
-
-    frame_interval = int(fps // target_fps)
-
+def video_to_frames(video_path, output_folder):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
+    cap = cv2.VideoCapture(video_path)
     frame_count = 0
-
-    while True:
-        ret, frame = video_capture.read()
-        # here we only want 201 frames
-        if not ret or frame_count>200:
-            break
-
-        if frame_count % frame_interval == 0:
-            frame_filename = os.path.join(output_folder, f"frame_{frame_count + 1:03d}.jpg")
-            cv2.imwrite(frame_filename, frame)
-
+    while cap.isOpened():
+        print(frame_count)
+        ret, frame = cap.read()
+        if not ret: break
+        cv2.imwrite(os.path.join(output_folder, f'{frame_count:05d}.jpg'), frame)
         frame_count += 1
+    cap.release()
 
-    video_capture.release()
-    print(f"Successfully saved {frame_count // frame_interval} frames to {output_folder}。")
+    print(f"Successfully saved frames to {output_folder}。")
 
-
-# 示例用法
-video_path = 'D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\ego4Ddata\\v2\\full_scale\\kitchen.mp4'  # 替换为视频文件路径
-output_folder = 'output_frames\\kitchen20fps'
-video_to_frames(video_path, output_folder, target_fps=20)
+video_path = r'./data/kitchen.mp4'
+output_folder = 'output_frames'
+video_to_frames(video_path, output_folder)

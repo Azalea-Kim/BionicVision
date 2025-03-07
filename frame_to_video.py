@@ -3,7 +3,6 @@ import cv2
 import imageio
 import numpy as np
 
-# 重新push
 
 def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
     frames = []  # Store saliency maps of each frame
@@ -31,17 +30,8 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
             writer.append_data(frame)  # Append the saliency map as a frame
         print(f"Video saved to {output_video_path}")
 
-# Define the paths
-local_dir = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master"
-# input_folder = local_dir+"\\saliency_output\\kitchen20fps"  # Folder containing the saliency map images
-# output_video_path = local_dir+"\\saliency_output\\saliency_video_kitchen_20fps.mp4"  # Path where the video will be saved
 
-input_folder = local_dir+"\\segmentation_output\\detectron_mask_kitchen_20fps"  # Folder containing the saliency map images
-output_video_path = local_dir+"\\segmentation_output\\segmentation_video_kitchen_20fps.mp4"  # Path where the video will be saved
+input_folder = 'C:/Users/ronki/OneDrive/Documents/GitHub/BionicVision/data/saliency_output'
+output_video_path = 'C:/Users/ronki/OneDrive/Documents/GitHub/BionicVision/data/saliency_output/kitchen.mp4'
 
-
-
-input_folder = local_dir+"\\depth_output_npy\\kitchen20fps_monodepth2_frames"
-output_video_path = local_dir+"\\depth_output_npy\\kitchen20fps_monodepth2_frames.mp4"
-# Create a video from the saliency maps
 create_video_from_frames(input_folder, output_video_path)
