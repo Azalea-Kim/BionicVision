@@ -10,6 +10,117 @@ from skimage import morphology
 from matplotlib.patches import Circle
 import sys
 
+average_scene = 10
+average_objects = 5
+average_arm = 5
+
+arms_list = np.zeros((1440, 1920, average_arm))
+scene_list = np.zeros((1440, 1920, average_scene))
+objects_list = np.zeros((1440, 1920, average_objects))
+
+
+def weighted_average(count, mask, lamb, threshold, list, average):
+
+    print(average)
+    print(list.shape)
+    weights = np.array([np.exp(-lamb * i) for i in range(average - 1, -1, -1)]) #[0,1,2,3,4,5,6,7,8,9]
+    print(weights)
+
+    if count < average: # count starts from 1
+        list[:, :, count - 1] = mask
+        frames_to_avg = list[:, :, :count]
+        # weighted_avg = np.average(frames_to_avg, axis=2, weights=weights[average - count:])
+
+        H, W, N = frames_to_avg.shape
+        weighted_sum = np.zeros((H, W), dtype=np.float32)
+        total_weight = 0.0
+
+        # 转换为 float32 类型
+        frames_to_avg_f32 = frames_to_avg.astype(np.float32)
+        weights_f32 = weights.astype(np.float32)
+
+        for i in range(N):
+            weighted_sum += frames_to_avg_f32[:, :, i] * weights_f32[i]
+            total_weight += weights_f32[i]
+
+        weighted_avg = weighted_sum / total_weight
+
+        # plt.imshow(weighted_avg, cmap="gray")
+        # plt.title("Edges1: " + str(count))
+        # plt.axis("off")
+        # plt.show()
+
+    else:
+        if count == average:
+            list[:, :, count - 1] = mask
+
+        else:
+            list = np.roll(list, shift=-1, axis=2)
+            list[:, :, -1] = mask
+
+        print("exceed now ",count)
+        frames_to_avg = list
+        weighted_avg = np.average(frames_to_avg, axis=2, weights=weights)
+
+        # plt.imshow(weighted_avg, cmap="gray")
+        # plt.title("Edges2: " + str(count))
+        # plt.axis("off")
+        # plt.show()
+
+    pixel_threshold = threshold * 255
+    # result_mask = (weighted_avg > pixel_threshold)* 255
+
+    # import gc
+    # del frames_to_avg_f32
+    # del frames_to_avg
+    # del weights_f32
+    # del weights
+    # del weighted_sum   # 删除不再需要的变量
+    # gc.collect()
+
+
+    result_mask = np.where(weighted_avg > pixel_threshold, weighted_avg, 0)
+    # image = (weighted_avg > pixel_threshold).astype(np.uint8) * 255
+
+    # plt.imshow(result_mask, cmap="gray")
+    # plt.title("threshold: " + str(count))
+    # plt.axis("off")
+    # plt.show()
+
+    # # 创建一个竖直排列的图像，共3个子图
+    # fig, axs = plt.subplots(3, 1, figsize=(6, 18))
+    #
+    # # 绘制原始mask
+    # axs[0].imshow(mask, cmap="gray")
+    # axs[0].set_title("Original Mask (Frame " + str(count) + ")")
+    # axs[0].axis("off")
+    #
+    # # 绘制加权平均结果
+    # axs[1].imshow(weighted_avg, cmap="gray")
+    # axs[1].set_title("WA L0.8;T0.3(Frame " + str(count) + ")")
+    # axs[1].axis("off")
+    #
+    # # 绘制阈值处理后的结果
+    # axs[2].imshow(result_mask, cmap="gray")
+    # axs[2].set_title("Threshold (Frame " + str(count) + ")")
+    # axs[2].axis("off")
+    #
+    # plt.tight_layout()
+    #
+    # # Save the combined plot
+    #
+    # mask_out_dir = "segmentation_output/arm_w_avg_5_0.8L_0.3T"
+    # if not os.path.exists(mask_out_dir):
+    #     os.mkdir(mask_out_dir)
+    #
+    # save_filename = f"weighted_result_{count-1:05d}.png"
+    # filepath = os.path.join(mask_out_dir, save_filename)
+    # plt.savefig(filepath)
+    #
+    # plt.show()
+
+    return result_mask, list
+
 
 
 def PCA_get_angle(xs,ys,plot):
@@ -126,7 +237,6 @@ def exponential_circle_mask(
     else:
         ratio = np.exp(-alpha * (d / d_max))
 
-
     # 6. 限制 ratio 在 [0,1]
     ratio = max(0, min(1, ratio))
 
@@ -134,7 +244,6 @@ def exponential_circle_mask(
     radius = int(r_min + (r_max - r_min) * ratio)
 
     return radius
-
 
 
 def intersection_percentage(object_mask: np.ndarray, circle_mask: np.ndarray) -> float:
@@ -212,7 +321,7 @@ def intersection_saliency(object_mask, saliency_mask, count):
     # 1. Convert to boolean arrays for easy logical operations
     object_bool = (object_mask >0 )
     saliency_bool = (saliency_mask >  0)
-    plot_object_saliency_masks(object_bool, saliency_bool, count)
+    # plot_object_saliency_masks(object_bool, saliency_bool, count)
     # 2. Count the number of 255 pixels in the object mask
     object_count = np.count_nonzero(object_bool)
     if object_count == 0:
@@ -222,9 +331,6 @@ def intersection_saliency(object_mask, saliency_mask, count):
     # 3. Compute intersection (where both are True)
     intersection_bool = object_bool & saliency_bool
     intersection_count = np.count_nonzero(intersection_bool)
-
-
-
 
     return intersection_count > 0
 
@@ -254,8 +360,10 @@ def plot_segmentation_classes(seg_array):
     plt.tight_layout()
     plt.show()
 
+
 def get_nonzero_class_masks(seg_array):
     # 1. Find all unique classes
+
     unique_classes = np.unique(seg_array)
 
     # 2. Filter out the 0 (background)
@@ -278,10 +386,51 @@ all_frames = glob.glob(arm_frames_dir+"\\*.npy")
 saliency_frames_dir = local_dir+"\\saliency3\\saliency_npy2image_95"
 
 # saliency_frames_dir = local_dir+"\\gaze_estimations\\kitchen_20fps\\threshold_90" # 1
-#
-#
 
 
+num_instances_objects = 0
+# load video and retrieve number of instances
+for filename in os.listdir(objects_frames_dir):
+    if filename.endswith('.npy'):
+        img = np.load(os.path.join(objects_frames_dir, filename))
+        num_instances_objects = max(num_instances_objects, np.max(img))
+num_instances_objects = int(num_instances_objects)
+print(f'Number of instances in video {objects_frames_dir}', num_instances_objects)
+
+
+num_instances_arm = 0
+# load video and retrieve number of instances
+for filename in os.listdir(arm_frames_dir):
+    if filename.endswith('.npy'):
+        img = np.load(os.path.join(arm_frames_dir, filename))
+        num_instances_arm = max(num_instances_arm, np.max(img))
+num_instances_arm = int(num_instances_arm)
+print(f'Number of instances in video {arm_frames_dir}', num_instances_arm)
+
+
+num_instances_scene = 0
+# load video and retrieve number of instances
+for filename in os.listdir(scene_frames_dir):
+    if filename.endswith('.npy'):
+        img = np.load(os.path.join(scene_frames_dir, filename))
+        num_instances_scene = max(num_instances_scene, np.max(img))
+num_instances_scene = int(num_instances_scene)
+print(f'Number of instances in video {scene_frames_dir}', num_instances_scene)
+
+instance_seen_last_scene = [-1] * num_instances_scene
+instance_seen_last_objects = [-1] * num_instances_objects
+instance_seen_last_arm = [-1] * num_instances_arm
+
+
+    # for i in range(num_instances):
+    #     instance_id = i + 1
+    #     if instance_id in image:
+    #         instance_seen_last[i] = index
+    #     elif instance_seen_last[i] != -1 and index - instance_seen_last[i] <= persist:
+    #         prev_frame = images[instance_seen_last[i]]
+    #         mask = (prev_frame == instance_id)
+    #         curr_vals = images[index][mask].copy()
+    #         images[index][mask] = np.maximum(curr_vals, instance_id)
 
 # Deal with cases with error in hand detection
 person_history = deque([False, False, False, False, False], maxlen=5)
@@ -290,16 +439,15 @@ most_recent_circle_mask = None
 saliency_history = deque([False, False, False, False, False, False, False, False, False, False], maxlen=10)
 most_recent_saliency_mask = None
 
+
 # Get bright if no hand is detected for long
 no_hand_frames = 0
 no_hand_threshold = 30
 
-W = 10  # store the most recent W frames' edge detection result
-w_count = 0
-edge_rep = np.zeros((1440, 1920, W))
 
+for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
-for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
+# for count in np.arange(0, 13):  # each frame !!modified +1
     arm_name = arm_frames_dir+"\\frame_%05d.npy" % count
     arm_mask = np.load(arm_name)
 
@@ -381,7 +529,6 @@ for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
                     is_saliency = intersection_saliency(mask, most_recent_saliency_mask, count)
                     if is_saliency == True:
                         s_weight = 1.159
-
                         print("Recent Saliency")
 
                 area = np.sum(mask)
@@ -447,7 +594,11 @@ for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
                     else:
                         masks_comb = np.maximum(masks_comb, mask * b)
                         saliency_history.append(False)
+
+
     if is_person:
+            masks_comb, objects_list = weighted_average(count + 1, masks_comb, 1.2, 0.1, objects_list, average_objects)
+            hand_mask, arms_list = weighted_average(count + 1, hand_mask, 0.8, 0.3, arms_list, average_arm)
             masks_comb = np.maximum(masks_comb, hand_mask)
 
     plt.figure(figsize=(12, 5))
@@ -531,11 +682,14 @@ for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
         ### add scene edges to the frame
         if is_person:
             b = 160 # b2
+
         else:
             b = 255
         scene_edges = edges.astype(np.float32)  # convert to float for scaling
         scene_edges *= float(b) / 255.0  # scale to [0..200]
         scene_edges = scene_edges.astype(np.uint8)  # convert back to uint8
+
+        scene_edges, scene_list = weighted_average(count+1, scene_edges, 1.0, 0.3, scene_list, average_scene)
 
         masks_comb = np.maximum(masks_comb, scene_edges)
 
@@ -548,7 +702,7 @@ for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
 
 
     # Create output folder if it doesn't exist
-    mask_out_dir = "segmentation_output/deva_seg_scene_sal_95_255_history"
+    mask_out_dir = "segmentation_output/final_avg_95_255_history"
     if not os.path.exists(mask_out_dir):
         os.mkdir(mask_out_dir)
 
@@ -558,12 +712,11 @@ for count in np.arange(189, len(all_frames)):  # each frame !!modified +1
     plt.axis("off")
     plt.title('Object segmentation (b2=160, b12=220, ip>50)')
 
-
+    plt.show()
     # filename = "frame_%d_seg.png" % count
     # filepath = os.path.join(mask_out_dir, filename)
-    # # plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
-    #
-    plt.show()
+    # plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
+
     masks_comb_uint8 = masks_comb.astype(np.uint8)
     seg_filename = os.path.join(mask_out_dir, f"frame_{count:05d}_seg.png")
     imageio.imwrite(seg_filename, masks_comb_uint8)
