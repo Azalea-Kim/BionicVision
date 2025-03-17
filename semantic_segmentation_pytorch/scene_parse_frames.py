@@ -1,3 +1,8 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Description: Object segmentation script for MIT Scene parse implemented from baseline source code
+"""
 # System libs
 # categories:
 # https://docs.google.com/spreadsheets/d/1se8YEtb2detS7OuPE86fXGyD269pMycAWe2mtKUj2W8/edit?pli=1&gid=0#gid=0
@@ -88,8 +93,6 @@ for count in np.arange(1, len(all_frames)):  # each frame
 
     visualize_result(img_original, pred)
 
-    # !!!一会放出来
-
     # # Top classes in answer
     # predicted_classes = np.bincount(pred.flatten()).argsort()[::-1]
     # for c in predicted_classes[:15]:
@@ -99,7 +102,6 @@ for count in np.arange(1, len(all_frames)):  # each frame
     #     if class_id in [1, 15]:  # wall door
     #         visualize_result(img_original, pred, c)
 
-    # scene 和 object不同亮度
     '''
       1 wall
       4 floor
@@ -215,73 +217,3 @@ for count in np.arange(1, len(all_frames)):  # each frame
     plt.imshow(edges, cmap='gray')
     plt.title(str(count)+'5')
     plt.show()
-
-    break
-
-    # kernel = np.ones((10, 10), np.uint8)
-    # # erode to reduce noise
-    # edges = cv2.erode(get_houghlines(edges), kernel)
-    # plt.title('6')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
-    #
-    # kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    # # ???? erode or dilate won't create non-binary values because (255,255,255) was the only process before
-    # # So I don't think we need threshold here:
-    #
-    # # (thresh, binRed) = cv2.threshold(hist_curr, 0, 255, cv2.THRESH_BINARY)
-    #
-    # # erode is just shrinking white regions
-    # # morphologyEx can reduce smaller noise, make edges smoother
-    # edges = cv2.morphologyEx(edges, cv2.MORPH_OPEN, kernel2, iterations=3)
-    # plt.title('7')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
-    #
-    # # hough and erode strenghthen edges structures and reduce noise
-    # edges = cv2.erode(get_houghlines(edges), kernel)
-    # plt.title('8')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
-    #
-    # break
-    #
-    #
-
-    W = 10 # store the most recent W frames' edge detection result
-    w_count = 0
-    edge_rep = np.zeros((height, width, W))
-
-    if count <= W: # count is current frame index
-        edge_rep[:, :, count - 1] = edges
-    else: # if we already have at least 10 frames
-        # update current edge
-
-        # turn current frame edges into (height, width, 1)
-        # concatenate in time dimension to (height, width, W+1)
-        hist_curr = np.concatenate([edge_rep, np.expand_dims(edges, 2)], axis=2)
-        # store all existed edges together within W frames
-        hist_curr = np.max(hist_curr, axis=2)
-        plt.imshow(hist_curr)
-
-        # erode to reduce noise
-        hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
-        plt.imshow(hist_curr)
-
-
-        kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        # ???? erode or dilate won't create non-binary values because (255,255,255) was the only process before
-        # So I don't think we need threshold here:
-
-        # (thresh, binRed) = cv2.threshold(hist_curr, 0, 255, cv2.THRESH_BINARY)
-
-        # erode is just shrinking white regions
-        # morphologyEx can reduce smaller noise, make edges smoother
-        hist_curr = cv2.morphologyEx(hist_curr, cv2.MORPH_OPEN, kernel2, iterations=3)
-
-        # hough and erode strenghthen edges structures and reduce noise
-        hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
-        edges = hist_curr
-        plt.imshow(edges, cmap='gray')
-        plt.title(str(count)+'9')
-        plt.show()

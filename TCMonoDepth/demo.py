@@ -1,5 +1,8 @@
-#!/usr/bin/python
-# -*- coding: UTF-8 -*-
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Modified to safe per frame outputs of npy and colored depth map
+"""
 
 import argparse
 import os
@@ -123,7 +126,7 @@ def run(args):
                 # process_depth(prediction)
                 output_list.append(prediction)
                 j += 1
-                # **Save the depth map as .npy**
+                # Save the depth map as .npy
                 npy_filename = os.path.join(args.output, f"frame_{j:03d}.npy")
                 np.save(npy_filename, prediction)
 

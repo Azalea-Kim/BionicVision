@@ -1,3 +1,10 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Object segmentation script for detectron2 implemented from baseline source code,
+only retrieve important object classes
+"""
+
 # Setup detectron2 logger
 import detectron2
 from detectron2.utils.logger import setup_logger
@@ -39,64 +46,63 @@ im = cv2.imread("D:\\2021-han-scene-simplification-master\\2021-han-scene-simpli
 predictor = DefaultPredictor(cfg)
 outputs = predictor(im)
 instances = outputs["instances"]
-# 可视化结果
-metadata = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])  # 读取 COCO 数据集元数据
+
+metadata = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
 visualizer = Visualizer(im, metadata=metadata, scale=1.2)
 vis_output = visualizer.draw_instance_predictions(instances.to("cpu"))
 
-# 显示结果
 plt.figure(figsize=(10, 10))
 plt.imshow(vis_output.get_image())
 plt.axis("off")
 plt.show()
 
 
-#
-# # Define important object classes (COCO class IDs)
-# important_classes = [0, 1, 2, 5, 7]  # person, bicycle, car, bus, train
-#
-# # Check if instance has predicted classes
-# if instances.has("pred_classes"):
-#     classes = instances.pred_classes.cpu().numpy()
-# else:
-#     classes = None
-#
-# # Get instance masks if available
-# if instances.has("pred_masks"):
-#     masks = np.asarray(instances.pred_masks.cpu().numpy())
-# else:
-#     masks = None
 
-# # Filter classes
-# classes_fil = []
-# if classes is not None:
-#     for c in classes:
-#         if c in important_classes:
-#             classes_fil.append(1)
-#         else:
-#             classes_fil.append(0)
+# Define important object classes (COCO class IDs)
+important_classes = [0, 1, 2, 5, 7]  # person, bicycle, car, bus, train
 
-# # Determine final mask
-# if np.sum(classes_fil) == 0:  # No important objects
-#     masks_comb = edges  # `edges` needs to be defined elsewhere
-# else:
-#     masks_idx = np.where(np.array(classes_fil) == 1)[0]
-#     if len(masks_idx) > 0:
-#         masks_fil = masks[masks_idx, :, :]
-#         masks_comb = np.max(masks_fil, axis=0)
-#     else:
-#         masks_comb = np.zeros(im.shape[:2])  # Default to an empty mask
-#
-# # Create output folder if it doesn't exist
-# if not os.path.exists("detectron_mask"):
-#     os.mkdir("detectron_mask")
-#
-# # Display and save segmented image
-# print("Processing frame %d" % count)
-# plt.imshow(masks_comb, cmap="gray")
-# plt.axis("off")
-#
-# filename = "frame_%d_seg.jpg" % count
-# filepath = os.path.join("detectron_mask", filename)
-# plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
-# plt.close()  # Close figure to prevent overlapping
+# Check if instance has predicted classes
+if instances.has("pred_classes"):
+    classes = instances.pred_classes.cpu().numpy()
+else:
+    classes = None
+
+# Get instance masks if available
+if instances.has("pred_masks"):
+    masks = np.asarray(instances.pred_masks.cpu().numpy())
+else:
+    masks = None
+
+# Filter classes
+classes_fil = []
+if classes is not None:
+    for c in classes:
+        if c in important_classes:
+            classes_fil.append(1)
+        else:
+            classes_fil.append(0)
+
+# Determine final mask
+if np.sum(classes_fil) == 0:  # No important objects
+    masks_comb = edges  # `edges` needs to be defined elsewhere
+else:
+    masks_idx = np.where(np.array(classes_fil) == 1)[0]
+    if len(masks_idx) > 0:
+        masks_fil = masks[masks_idx, :, :]
+        masks_comb = np.max(masks_fil, axis=0)
+    else:
+        masks_comb = np.zeros(im.shape[:2])  # Default to an empty mask
+
+# Create output folder if it doesn't exist
+if not os.path.exists("detectron_mask"):
+    os.mkdir("detectron_mask")
+
+# Display and save segmented image
+print("Processing frame %d" % count)
+plt.imshow(masks_comb, cmap="gray")
+plt.axis("off")
+
+filename = "frame_%d_seg.jpg" % count
+filepath = os.path.join("detectron_mask", filename)
+plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
+plt.close()  # Close figure to prevent overlapping

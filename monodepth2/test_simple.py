@@ -1,3 +1,9 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Modified to resize back to the size of original image
+"""
+
 # Copyright Niantic 2019. Patent Pending. All rights reserved.
 #
 # This software is licensed under the terms of the Monodepth2 licence
@@ -172,7 +178,7 @@ def test_simple(args):
                 scaled_disp_resized = torch.nn.functional.interpolate(
                     scaled_disp, (original_height, original_width), mode="bilinear", align_corners=False
                 )
-                # Squeeze 之后存储
+                # Squeeze then store
                 scaled_disp_np = scaled_disp_resized.squeeze().cpu().numpy()
                 np.save(name_dest_npy, scaled_disp_np)
 
