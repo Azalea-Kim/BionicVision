@@ -1,3 +1,11 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Edge detectoin from depth map based on
+the paper 'LBP-Based Edge Detection Method for Depth Images With Low Resolutions'
+Didn't apply for final result
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
