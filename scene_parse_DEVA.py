@@ -1,3 +1,9 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Segmentation Pipeline for DEVA + saliency (priority table, persist and weighted average)
+"""
+
 import os, csv, torch, scipy.io, torchvision.transforms, glob, cv2
 from collections import deque
 import imageio
@@ -29,27 +35,7 @@ def weighted_average(count, mask, lamb, threshold, list, average):
     if count < average: # count starts from 1
         list[:, :, count - 1] = mask
         frames_to_avg = list[:, :, :count]
-        # weighted_avg = np.average(frames_to_avg, axis=2, weights=weights[average - count:])
-
-        H, W, N = frames_to_avg.shape
-        weighted_sum = np.zeros((H, W), dtype=np.float32)
-        total_weight = 0.0
-
-        # 转换为 float32 类型
-        frames_to_avg_f32 = frames_to_avg.astype(np.float32)
-        weights_f32 = weights.astype(np.float32)
-
-        for i in range(N):
-            weighted_sum += frames_to_avg_f32[:, :, i] * weights_f32[i]
-            total_weight += weights_f32[i]
-
-        weighted_avg = weighted_sum / total_weight
-
-        # plt.imshow(weighted_avg, cmap="gray")
-        # plt.title("Edges1: " + str(count))
-        # plt.axis("off")
-        # plt.show()
-
+        weighted_avg = np.average(frames_to_avg, axis=2, weights=weights[average - count:])
     else:
         if count == average:
             list[:, :, count - 1] = mask
@@ -61,107 +47,43 @@ def weighted_average(count, mask, lamb, threshold, list, average):
         print("exceed now ",count)
         frames_to_avg = list
         weighted_avg = np.average(frames_to_avg, axis=2, weights=weights)
-
-        # plt.imshow(weighted_avg, cmap="gray")
-        # plt.title("Edges2: " + str(count))
-        # plt.axis("off")
-        # plt.show()
-
     pixel_threshold = threshold * 255
-    # result_mask = (weighted_avg > pixel_threshold)* 255
-
-    # import gc
-    # del frames_to_avg_f32
-    # del frames_to_avg
-    # del weights_f32
-    # del weights
-    # del weighted_sum   # 删除不再需要的变量
-    # gc.collect()
 
 
     result_mask = np.where(weighted_avg > pixel_threshold, weighted_avg, 0)
-    # image = (weighted_avg > pixel_threshold).astype(np.uint8) * 255
-
-    # plt.imshow(result_mask, cmap="gray")
-    # plt.title("threshold: " + str(count))
-    # plt.axis("off")
-    # plt.show()
-
-    # # 创建一个竖直排列的图像，共3个子图
-    # fig, axs = plt.subplots(3, 1, figsize=(6, 18))
-    #
-    # # 绘制原始mask
-    # axs[0].imshow(mask, cmap="gray")
-    # axs[0].set_title("Original Mask (Frame " + str(count) + ")")
-    # axs[0].axis("off")
-    #
-    # # 绘制加权平均结果
-    # axs[1].imshow(weighted_avg, cmap="gray")
-    # axs[1].set_title("WA L0.8;T0.3(Frame " + str(count) + ")")
-    # axs[1].axis("off")
-    #
-    # # 绘制阈值处理后的结果
-    # axs[2].imshow(result_mask, cmap="gray")
-    # axs[2].set_title("Threshold (Frame " + str(count) + ")")
-    # axs[2].axis("off")
-    #
-    # plt.tight_layout()
-    #
-    # # Save the combined plot
-    #
-    # mask_out_dir = "segmentation_output/arm_w_avg_5_0.8L_0.3T"
-    # if not os.path.exists(mask_out_dir):
-    #     os.mkdir(mask_out_dir)
-    #
-    # save_filename = f"weighted_result_{count-1:05d}.png"
-    # filepath = os.path.join(mask_out_dir, save_filename)
-    # plt.savefig(filepath)
-    #
-    # plt.show()
 
     return result_mask, list
 
 
 
 def PCA_get_angle(xs,ys,plot):
-    # 2. 组合成点集, 形状 (N, 2)
-    # 注意：这里把 (x, y) 放在一起，符合常见的 (col, row) => (x, y) 约定
     points = np.column_stack((xs, ys))  # shape: (N, 2)
-
-    # 3. 计算均值, 并将点集中心化
     mean = np.mean(points, axis=0)  # (mean_x, mean_y)
     centered = points - mean
 
-    # 4. 计算 2×2 协方差矩阵
-    cov = np.cov(centered, rowvar=False)  # rowvar=False 表示每列是一个维度
+    cov = np.cov(centered, rowvar=False)
 
-    # 5. 对协方差矩阵做特征分解 (PCA)
+    # PCA
     eigen_vals, eigen_vecs = np.linalg.eig(cov)
     # eigen_vals: [λ1, λ2]
     # eigen_vecs: [[v1_x, v2_x],
     #              [v1_y, v2_y]]
 
-    # 取最大特征值对应的特征向量 (主轴)
     idx = np.argmax(eigen_vals)
     principal_axis = eigen_vecs[:, idx]  # shape: (2,)
 
-    # 6. 计算主轴的旋转角度 (相对于 x 轴)
+    # -y axis
     angle_radians = np.arctan2(principal_axis[0], principal_axis[1])
     angle_degrees = np.degrees(angle_radians)
-    # print(f"主轴角度: {angle_degrees:.2f}° (相对于 -y 轴)")
 
     if plot:
-        # 7. 可视化结果
         plt.figure(figsize=(6, 5))
         plt.imshow(mask_image, cmap="gray")
         plt.title(f"PCA Principal Axis (-y): {angle_degrees:.2f}°")
         plt.axis("off")
-
-        # 绘制中心点
         plt.scatter(mean[0], mean[1], color='red', s=50, label='Center')
 
-        # 从中心点延伸出一条表示主轴方向的线
-        length = 100  # 线段长度，可根据图像尺寸调节
+        length = 100
         x_end = mean[0] + length * principal_axis[0]
         y_end = mean[1] + length * principal_axis[1]
         plt.plot([mean[0], x_end], [mean[1], y_end], color='green', linewidth=2, label='Principal Axis')
@@ -198,55 +120,33 @@ def get_houghlines(edges):
 
     return edge_combined
 
-def exponential_circle_mask(
-    mask_image,
-    hand_x,
-    hand_y,
-    r_min,
-    r_max,
-    alpha, isSquaredRatio
+def exponential_circle_mask(mask_image,hand_x,hand_y,r_min,r_max,alpha, isSquaredRatio
 ):
-    """
-    alpha : float
-        控制指数衰减的系数。越大表示半径随距离衰减更快。
-
-    """
-    # 1. 获取图像宽高
     h, w = mask_image.shape[:2]
 
-    # 2. 计算图像中心
+    # center of the image
     c_x, c_y = w / 2.0, h / 2.0
 
-    # 3. 计算手到中心的距离 d
+    # hand to center distance d
     dx = hand_x - c_x
     dy = hand_y - c_y
     d = np.sqrt(dx**2 + dy**2)
 
-    # 4. 最大距离 d_max (从中心到四角中最远的一个角)
     d_max = np.sqrt((w / 2.0)**2 + (h / 2.0)**2)
 
-    # 5. 指数衰减计算 ratio
-    # ratio 在 d=0 时 = 1.0, d= d_max 时 ~= e^(-alpha)
     if d_max == 0:
-        # 容错：万一图像尺寸为 0
         return r_min
-
-    # 让 ratio = exp(-alpha * (d / d_max))
     if isSquaredRatio:
         ratio = np.exp(-alpha * (d / d_max) ** 2)  # Slow Near Center, Faster at Edges
     else:
         ratio = np.exp(-alpha * (d / d_max))
-
-    # 6. 限制 ratio 在 [0,1]
     ratio = max(0, min(1, ratio))
-
-    # 7. 根据 ratio 计算最终半径
     radius = int(r_min + (r_max - r_min) * ratio)
 
     return radius
 
 
-def intersection_percentage(object_mask: np.ndarray, circle_mask: np.ndarray) -> float:
+def intersection_percentage(object_mask, circle_mask):
     # 1. Convert to boolean arrays for easy logical operations
     object_bool = (object_mask == 255)
     circle_bool = (circle_mask == 255)
@@ -267,17 +167,6 @@ def intersection_percentage(object_mask: np.ndarray, circle_mask: np.ndarray) ->
 
 
 def plot_object_saliency_masks(object_bool, saliency_bool, count):
-    """
-    object_bool: 2D boolean array (True/False)
-    saliency_bool: 2D boolean array (True/False)
-
-    We create a 3-channel color image (H,W,3) in uint8:
-      - Intersection (object & saliency) => Yellow (255,255,0)
-      - Object only => Green (0,255,0)
-      - Saliency only => Red (255,0,0)
-      - Neither => Black (0,0,0)
-    Then we plot it with Matplotlib.
-    """
     # 1. Check shapes
     if object_bool.shape != saliency_bool.shape:
         raise ValueError("object_bool and saliency_bool must have the same shape.")
@@ -293,7 +182,6 @@ def plot_object_saliency_masks(object_bool, saliency_bool, count):
 
     if not intersection.any():
         return
-
         # 4. Object only => Green
     object_only = object_bool & ~intersection
     color_image[object_only] = (0, 255, 0)
@@ -384,54 +272,6 @@ scene_frames_dir = local_dir+"\\deva_outputs\\masks\\masks\\door.window"
 objects_frames_dir = local_dir+"\\deva_outputs\\masks\\masks\\utensil.food.kitchen_appliance.pot.pan.knife.cutting_board"
 all_frames = glob.glob(arm_frames_dir+"\\*.npy")
 saliency_frames_dir = local_dir+"\\saliency3\\saliency_npy2image_95"
-
-# saliency_frames_dir = local_dir+"\\gaze_estimations\\kitchen_20fps\\threshold_90" # 1
-
-
-num_instances_objects = 0
-# load video and retrieve number of instances
-for filename in os.listdir(objects_frames_dir):
-    if filename.endswith('.npy'):
-        img = np.load(os.path.join(objects_frames_dir, filename))
-        num_instances_objects = max(num_instances_objects, np.max(img))
-num_instances_objects = int(num_instances_objects)
-print(f'Number of instances in video {objects_frames_dir}', num_instances_objects)
-
-
-num_instances_arm = 0
-# load video and retrieve number of instances
-for filename in os.listdir(arm_frames_dir):
-    if filename.endswith('.npy'):
-        img = np.load(os.path.join(arm_frames_dir, filename))
-        num_instances_arm = max(num_instances_arm, np.max(img))
-num_instances_arm = int(num_instances_arm)
-print(f'Number of instances in video {arm_frames_dir}', num_instances_arm)
-
-
-num_instances_scene = 0
-# load video and retrieve number of instances
-for filename in os.listdir(scene_frames_dir):
-    if filename.endswith('.npy'):
-        img = np.load(os.path.join(scene_frames_dir, filename))
-        num_instances_scene = max(num_instances_scene, np.max(img))
-num_instances_scene = int(num_instances_scene)
-print(f'Number of instances in video {scene_frames_dir}', num_instances_scene)
-
-instance_seen_last_scene = [-1] * num_instances_scene
-instance_seen_last_objects = [-1] * num_instances_objects
-instance_seen_last_arm = [-1] * num_instances_arm
-
-
-    # for i in range(num_instances):
-    #     instance_id = i + 1
-    #     if instance_id in image:
-    #         instance_seen_last[i] = index
-    #     elif instance_seen_last[i] != -1 and index - instance_seen_last[i] <= persist:
-    #         prev_frame = images[instance_seen_last[i]]
-    #         mask = (prev_frame == instance_id)
-    #         curr_vals = images[index][mask].copy()
-    #         images[index][mask] = np.maximum(curr_vals, instance_id)
-
 # Deal with cases with error in hand detection
 person_history = deque([False, False, False, False, False], maxlen=5)
 most_recent_circle_mask = None
@@ -444,9 +284,18 @@ most_recent_saliency_mask = None
 no_hand_frames = 0
 no_hand_threshold = 30
 
+# persist
+average_scene = 10
+average_objects = 5
+average_arm = 5
+
+arms_list = np.zeros((1440, 1920, average_arm))
+scene_list = np.zeros((1440, 1920, average_scene))
+objects_list = np.zeros((1440, 1920, average_objects))
+
+
 
 for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
-
 # for count in np.arange(0, 13):  # each frame !!modified +1
     arm_name = arm_frames_dir+"\\frame_%05d.npy" % count
     arm_mask = np.load(arm_name)
@@ -467,6 +316,38 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
     objects = get_nonzero_class_masks(objects_mask)
     scene = get_nonzero_class_masks(scene_mask)
 
+
+    # Persist
+    num_instances = max(num_instances, np.max(objects_mask))
+        print(num_instances)
+        images.append(objects_mask)
+        num_instances = int(num_instances)
+        if count ==0 :
+            instance_seen_last = [-1]*num_instances
+
+        else:
+            if len(instance_seen_last) < num_instances:
+                instance_seen_last.extend([-1] * (num_instances - len(instance_seen_last)))
+
+        print(instance_seen_last)
+
+        index = count
+        print(index)
+        persist = 10
+        for i in range(num_instances):
+            instance_id = i + 1
+            if instance_id in objects_mask:
+                instance_seen_last[i] = index
+            elif instance_seen_last[i] != -1 and index - instance_seen_last[i] <= persist:
+                prev_frame = images[instance_seen_last[i]]
+                mask = (prev_frame == instance_id)
+
+                curr_vals = images[index][mask].copy()
+
+                images[index][mask] = np.maximum(curr_vals, instance_id)
+
+                objects_mask = images[index]
+
     # plot_segmentation_classes(scene_mask)
     # plot_segmentation_classes(objects_mask)
 
@@ -475,6 +356,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
     min_area = 80000
     is_person = False
 
+    # generate hand mask
     if len(arm) > 0:
         is_person = True
         hand_mask = np.zeros_like(arm[0])
@@ -482,7 +364,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
         for i in arm:
             mask_image = i * 255
-            hand_mask = np.maximum(hand_mask, i * 255)  # 单独分出来后面可以少加一次
+            hand_mask = np.maximum(hand_mask, i * 255)
 
             ys, xs = np.where(mask_image == 255)
             # Safety check in case the mask is empty
@@ -516,6 +398,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
             circle_mask = np.maximum(circle_mask, c_mask)
             most_recent_circle_mask = circle_mask
 
+    # deal with object instances
     if len(objects) > 0:
         for mask in objects:
                 s_weight = 1.00
@@ -535,10 +418,10 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
                 ip = 0.0
                 b = 160  # Base:b2
                 if is_person:
-                    # print("有手")
+                    # hand detected
                     ip = intersection_percentage(mask * 255, circle_mask)
                 elif any(person_history):
-                    # print("前两frame有手")
+                    # hand detected in past fixed frames
                     ip = intersection_percentage(mask * 255, most_recent_circle_mask)
                 # No hand detected for long time get back to 220 not 160
                 elif no_hand_frames >= no_hand_threshold:
@@ -575,7 +458,6 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
                         edge_val = (b / s_weight)
 
-                        # edge_val = (b / 2)
                         edge_array = np.where(mask_e == 255, edge_val, 0)
 
                         # temp = mask.astype(np.float32) * (b * s_weight)
@@ -597,6 +479,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
 
     if is_person:
+            # weighted average
             masks_comb, objects_list = weighted_average(count + 1, masks_comb, 1.2, 0.1, objects_list, average_objects)
             hand_mask, arms_list = weighted_average(count + 1, hand_mask, 0.8, 0.3, arms_list, average_arm)
             masks_comb = np.maximum(masks_comb, hand_mask)
@@ -685,6 +568,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
         else:
             b = 255
+
         scene_edges = edges.astype(np.float32)  # convert to float for scaling
         scene_edges *= float(b) / 255.0  # scale to [0..200]
         scene_edges = scene_edges.astype(np.uint8)  # convert back to uint8
@@ -702,7 +586,7 @@ for count in np.arange(0, len(all_frames)):  # each frame !!modified +1
 
 
     # Create output folder if it doesn't exist
-    mask_out_dir = "segmentation_output/final_avg_95_255_history"
+    mask_out_dir = "segmentation_output/DEVA_base_clutter"
     if not os.path.exists(mask_out_dir):
         os.mkdir(mask_out_dir)
 

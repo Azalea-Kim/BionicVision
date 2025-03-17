@@ -1,3 +1,9 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Apply thresholding to top N% of the saliency in frames and store images
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os

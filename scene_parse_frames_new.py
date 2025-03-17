@@ -1,3 +1,11 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Segmentation Pipeline, baseline improvements + priority table (no saliency)
+No persist and weighted average
+"""
+
+
 # categories:
 # https://docs.google.com/spreadsheets/d/1se8YEtb2detS7OuPE86fXGyD269pMycAWe2mtKUj2W8/edit?pli=1&gid=0#gid=0
 import os, csv, torch, scipy.io, torchvision.transforms, glob, cv2
@@ -7,11 +15,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, ImageFilter
 from skimage import morphology
-# import torch
-# torch.cuda.empty_cache()
 from matplotlib.patches import Circle
 import sys
-
+torch.cuda.empty_cache()
 # Get absolute path to the project root
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(project_root, "semantic_segmentation_pytorch"))
@@ -135,44 +141,32 @@ def get_houghlines(edges):
 
 
 def PCA_get_angle(xs,ys,plot):
-    # 2. 组合成点集, 形状 (N, 2)
-    # 注意：这里把 (x, y) 放在一起，符合常见的 (col, row) => (x, y) 约定
     points = np.column_stack((xs, ys))  # shape: (N, 2)
 
-    # 3. 计算均值, 并将点集中心化
     mean = np.mean(points, axis=0)  # (mean_x, mean_y)
     centered = points - mean
+    cov = np.cov(centered, rowvar=False)
 
-    # 4. 计算 2×2 协方差矩阵
-    cov = np.cov(centered, rowvar=False)  # rowvar=False 表示每列是一个维度
-
-    # 5. 对协方差矩阵做特征分解 (PCA)
     eigen_vals, eigen_vecs = np.linalg.eig(cov)
     # eigen_vals: [λ1, λ2]
     # eigen_vecs: [[v1_x, v2_x],
     #              [v1_y, v2_y]]
 
-    # 取最大特征值对应的特征向量 (主轴)
     idx = np.argmax(eigen_vals)
     principal_axis = eigen_vecs[:, idx]  # shape: (2,)
 
-    # 6. 计算主轴的旋转角度 (相对于 x 轴)
     angle_radians = np.arctan2(principal_axis[0], principal_axis[1])
     angle_degrees = np.degrees(angle_radians)
-    # print(f"主轴角度: {angle_degrees:.2f}° (相对于 -y 轴)")
 
     if plot:
-        # 7. 可视化结果
         plt.figure(figsize=(6, 5))
         plt.imshow(mask_image, cmap="gray")
         plt.title(f"PCA Principal Axis (-y): {angle_degrees:.2f}°")
         plt.axis("off")
 
-        # 绘制中心点
         plt.scatter(mean[0], mean[1], color='red', s=50, label='Center')
 
-        # 从中心点延伸出一条表示主轴方向的线
-        length = 100  # 线段长度，可根据图像尺寸调节
+        length = 100
         x_end = mean[0] + length * principal_axis[0]
         y_end = mean[1] + length * principal_axis[1]
         plt.plot([mean[0], x_end], [mean[1], y_end], color='green', linewidth=2, label='Principal Axis')
@@ -183,114 +177,61 @@ def PCA_get_angle(xs,ys,plot):
     return angle_degrees
 
 
-def adaptive_circle_mask(
-    mask_image,
-    hand_x,
-    hand_y,
-    r_min,
-    r_max) :
-
-    # 1. 获取图像宽高
+def adaptive_circle_mask( mask_image, hand_x, hand_y, r_min, r_max) :
     h, w = mask_image.shape[:2]
 
-    # 2. 计算图像中心
     c_x, c_y = w / 2.0, h / 2.0
 
-    # 3. 计算手到中心的距离 d
     dx = hand_x - c_x
     dy = hand_y - c_y
     d = np.sqrt(dx**2 + dy**2)
 
-    # 4. 最大距离 d_max (从中心到四角中最远的一个角)
     d_max = np.sqrt((w / 2.0)**2 + (h / 2.0)**2)
 
-    # 5. 线性反比计算 ratio
-    ratio = 1 - d / d_max  # 距离越大 ratio 越小
-    ratio = max(0, min(1, ratio))  # 限制在 [0,1] 范围
+    ratio = 1 - d / d_max
+    ratio = max(0, min(1, ratio))
 
-    # 6. 根据 ratio 计算最终半径
     radius = int(r_min + (r_max - r_min) * ratio)
-    #
-    # # 7. 生成圆形掩膜
     # circle_mask = np.zeros((h, w), dtype=np.uint8)
     # cv2.circle(circle_mask, (int(hand_x), int(hand_y)), radius, 255, -1)
 
     return radius
-
-def exponential_circle_mask(
-    mask_image,
-    hand_x,
-    hand_y,
-    r_min,
-    r_max,
-    alpha, isSquaredRatio
+def exponential_circle_mask(mask_image,hand_x,hand_y,r_min,r_max,alpha, isSquaredRatio
 ):
-    """
-    alpha : float
-        控制指数衰减的系数。越大表示半径随距离衰减更快。
-
-    """
-    # 1. 获取图像宽高
     h, w = mask_image.shape[:2]
 
-    # 2. 计算图像中心
+    # center of the image
     c_x, c_y = w / 2.0, h / 2.0
 
-    # 3. 计算手到中心的距离 d
+    # hand to center distance d
     dx = hand_x - c_x
     dy = hand_y - c_y
     d = np.sqrt(dx**2 + dy**2)
 
-    # 4. 最大距离 d_max (从中心到四角中最远的一个角)
     d_max = np.sqrt((w / 2.0)**2 + (h / 2.0)**2)
 
-    # 5. 指数衰减计算 ratio
-    # ratio 在 d=0 时 = 1.0, d= d_max 时 ~= e^(-alpha)
     if d_max == 0:
-        # 容错：万一图像尺寸为 0
         return r_min
-
-    # 让 ratio = exp(-alpha * (d / d_max))
     if isSquaredRatio:
         ratio = np.exp(-alpha * (d / d_max) ** 2)  # Slow Near Center, Faster at Edges
     else:
         ratio = np.exp(-alpha * (d / d_max))
-
-
-    # 6. 限制 ratio 在 [0,1]
     ratio = max(0, min(1, ratio))
-
-    # 7. 根据 ratio 计算最终半径
     radius = int(r_min + (r_max - r_min) * ratio)
 
     return radius
-
 
 def plot_adaptive_circles(mask_image,
     coords_list,
     r_min,
     r_max, isLinear):
-    """
-    在 mask_image 上，针对 coords_list 中的每个 (hand_x, hand_y)，
-    计算自适应圆半径，并用 Matplotlib 画不填充的圆。
-    """
-    # 1. 建立图像显示
+
     fig, ax = plt.subplots(figsize=(8, 6))
     background = np.zeros_like(mask_image)
     ax.imshow(background, cmap='gray')
-    # # 如果是灰度图，用 cmap='gray'
-    # if len(mask_image.shape) == 2:
-    #     ax.imshow(mask_image, cmap='gray')
-    # else:
-    #     # 如果是 BGR 彩色图，需要转为 RGB
-    #     img_rgb = cv2.cvtColor(mask_image, cv2.COLOR_BGR2RGB)
-    #     ax.imshow(img_rgb)
 
 
-
-    # 2. 对 coords_list 里的每个坐标画一个圆
     for (hand_x, hand_y) in coords_list:
-        # 计算自适应半径
         if isLinear:
             radius = adaptive_circle_mask(mask_image, hand_x, hand_y, r_min, r_max)
             ax.set_title("Adaptive Circles for Different Hand Positions (Linear), [100,400]")
@@ -300,7 +241,6 @@ def plot_adaptive_circles(mask_image,
             ax.set_title("Adaptive Circles for Different Hand Positions (Exponential), [50,400], alpha=2.0, squared ratio")
             ax.axis("off")
 
-        # 画一个不填充的圆 (fill=False)
         circle = Circle(
             (hand_x, hand_y),  # 圆心
             radius,
@@ -315,8 +255,6 @@ def plot_adaptive_circles(mask_image,
 
 def generate_grid_coords(mask_image, nx=6, ny=5, margin=50):
     h, w = mask_image.shape[:2]
-
-    # 如果只有1个点，间隔就设为0，避免除以 (nx-1)=0 的错误
     x_space = (w - 2 * margin) / (nx - 1) if nx > 1 else 0
     y_space = (h - 2 * margin) / (ny - 1) if ny > 1 else 0
 
@@ -328,35 +266,24 @@ def generate_grid_coords(mask_image, nx=6, ny=5, margin=50):
             coords.append((x, y))
     return coords
 
-def intersection_percentage(object_mask: np.ndarray, circle_mask: np.ndarray) -> float:
-    """
-    Computes the percentage of the object_mask (0/255) that intersects with the circle_mask (0/255).
-    """
-    # 1. Convert to boolean arrays for easy logical operations
+def intersection_percentage(object_mask, circle_mask):
     object_bool = (object_mask == 255)
     circle_bool = (circle_mask == 255)
 
-    # 2. Count the number of 255 pixels in the object mask
     object_count = np.count_nonzero(object_bool)
     if object_count == 0:
         # No object pixels => 0% by definition
         return 0.0
-
-    # 3. Compute intersection (where both are True)
     intersection_bool = object_bool & circle_bool
     intersection_count = np.count_nonzero(intersection_bool)
 
-    # 4. Compute percentage
     percentage = (intersection_count / object_count) * 100.0
     return percentage
 
 
 
 ### Start from scene segmentation
-# output_frames_dir = local_dir+"\\output_frames\\kitchen20fps"
-# output_frames_dir = local_dir+"\\output_frames\\kitchen20_detect_try"
-output_frames_dir = local_dir+"\\output_frames\\kitchen20_scene_try"
-# output_frames_dir = local_dir+"\\output_frames\\kitchen20_personhistory_try"
+output_frames_dir = local_dir+"\\output_frames\\kitchen20fps"
 all_frames = glob.glob(output_frames_dir+"\\*.jpg")
 
 
@@ -368,16 +295,19 @@ most_recent_circle_mask = None
 no_hand_frames = 0
 no_hand_threshold = 30
 
+average = 10
+lamb = 1.0
+threshold = 0.7
 
 W = 10  # store the most recent W frames' edge detection result
-w_count = 0
 edge_rep = np.zeros((1440, 1920, W))
 
 
 
-for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
+for count in np.arange(55, len(all_frames)+1 ):  # each frame !!modified +1
     # f_name = "\\frame%d.jpg" % count
-    f_name = output_frames_dir+"\\frame_%03d.jpg" % count
+    # f_name = "\\frame%d.jpg" % count
+    f_name = output_frames_dir + "\\frame_%03d.jpg" % count
     # f_name = "input.jpg"
     print("processing scene segmentation...")
     # pil_image = Image.open('ADE_val_00001519.jpg').convert('RGB')
@@ -399,13 +329,11 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     _, pred = torch.max(scores, dim=1)
     pred = pred.cpu()[0].numpy()
 
+    # If you want to visualize
+    # visualize_result(img_original, pred)
 
-
-    # !!!一会放出来
-    visualize_result(img_original, pred)
-
-    # # Top classes in answer
-    # predicted_classes = np.bincount(pred.flatten()).argsort()[::-1]
+    # Top classes in answer
+    predicted_classes = np.bincount(pred.flatten()).argsort()[::-1]
     # for c in predicted_classes[:15]:
     #     class_id = c + 1  # Ensure it matches 1-indexed labels
     #     class_name = names.get(class_id, "Unknown Class")
@@ -413,7 +341,6 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     #     if class_id in [1, 15]:  # wall door
     #         visualize_result(img_original, pred, c)
 
-    # scene 和 object不同亮度
     '''
       1 wall
       4 floor
@@ -435,51 +362,32 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
       125 microwave
 
     '''
-    # classes = [0, 14]  # wall, door [1-1, 15-1] index
     classes = [8, 14]  # window, door [1-1, 15-1] index
     pred_clean = pred.copy()
     # print(np.unique(pred_clean))
 
-    pred_clean[~np.isin(pred_clean, classes)] = -1 # modified!!! -1
-    # print(np.unique(pred_clean))
-    # plt.imshow(pred_clean, cmap='gray')
-    # plt.title('1')
-    # plt.show()
+    pred_clean[~np.isin(pred_clean, classes)] = -1  # modified!!! -1
+    print(np.unique(pred_clean))
 
     # filter out small islands
     pred_clean2 = morphology.remove_small_objects(pred_clean.astype(bool), min_size=16000).astype(int) * 255
 
-    # print(np.unique(pred_clean2))
-    # plt.imshow(pred_clean2, cmap='gray')
-    # plt.title('2')
-    # plt.show()
+    print(np.unique(pred_clean2))
 
     # combine mask with correct class labels
     pred_clean3 = np.minimum(pred_clean, pred_clean2)
-    # plt.imshow(pred_clean3, cmap='gray')
-    # plt.title('3')
-    # plt.show()
-
-    # np.savetxt("D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\semantic-segmentation-pytorch\\pred_cleans\\pred_clean.txt", pred_clean, fmt="%d")
-    # np.savetxt("D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\semantic-segmentation-pytorch\\pred_cleans\\pred_clean2.txt", pred_clean2, fmt="%d")
-    # np.savetxt("D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\semantic-segmentation-pytorch\\pred_cleans\\pred_clean3.txt", pred_clean3, fmt="%d")
-
 
     # get structure edges and get only long ones
-    image = Image.fromarray(np.uint8((pred_clean3+1) * 255), 'L') # turn to black and white
-    image_edge = image.filter(ImageFilter.FIND_EDGES) # edge detection
+    image = Image.fromarray(np.uint8((pred_clean3 + 1) * 255), 'L')  # turn to black and white
+    image_edge = image.filter(ImageFilter.FIND_EDGES)  # edge detection
     image_edge = np.array(image_edge)
-    kernel = np.ones((10, 10), np.uint8) # unit8 [0,255]
-    image_edge = cv2.dilate(image_edge, kernel, iterations=1) # make edges thicker and continuous
+    kernel = np.ones((10, 10), np.uint8)  # unit8 [0,255]
+    image_edge = cv2.dilate(image_edge, kernel, iterations=1)  # make edges thicker and continuous
     print(image_edge.shape)
-    # plt.imshow(image_edge, cmap='gray')
-    # plt.title('4-')
-    # plt.show()
 
+
+    # new
     edges_uint8 = image_edge.astype(np.uint8)
-
-    # Here edges are stil connected
-    # change later
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(edges_uint8, connectivity=8)
     # area_threshold = 550  # input
     area_threshold = 1500
@@ -489,28 +397,23 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
         if area >= area_threshold:
             edges_filtered[labels == label] = 255
 
-    # plt.imshow(edges_filtered, cmap="gray")
-    # plt.title("Filtered Edges")
-    # plt.axis("off")
-    # plt.show()
-
     image_edge = edges_filtered
 
     minLineLength = 5
     maxLineGap = 1
     lines = cv2.HoughLinesP(image_edge, 1, np.pi / 180, 15, minLineLength=minLineLength, maxLineGap=maxLineGap)
-    edges = np.zeros(pred_clean3.shape) # initialize a blank image
-    try: #modified here
+    edges = np.zeros(pred_clean3.shape)  # initialize a blank image
+    try:  # modified here
         height, width = edges.shape
         border_threshold = 10
         min_length = 30  # define noise
 
-        for x in range(0, len(lines)): # a line consists of two points (x1, y1) (x2, y2)
+        for x in range(0, len(lines)):  # a line consists of two points (x1, y1) (x2, y2)
             for x1, y1, x2, y2 in lines[x]:
-                distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)   # delete noise
+                distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)  # delete noise
 
                 # we don't want edges in the border (seems wrong)
-                if distance > min_length and not(
+                if distance > min_length and not (
                         x1 < border_threshold or x2 < border_threshold or
                         y1 < border_threshold or y2 < border_threshold or
                         x1 > width - border_threshold or x2 > width - border_threshold or
@@ -521,16 +424,12 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
 
     except (RuntimeError, TypeError, NameError):
         print("no lines")
-    # plt.imshow(edges, cmap='gray')
-    # plt.title(str(count)+'5')
-    # plt.show()
 
+    #new
     kernel = np.ones((10, 10), np.uint8)
     # erode to reduce noise
     edges = cv2.erode(get_houghlines(edges), kernel)
-    # plt.title('6')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
+
 
     edges_uint8 = edges.astype(np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(edges_uint8, connectivity=8)
@@ -541,70 +440,53 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
         if area >= area_threshold:
             edges_filtered[labels == label] = 255
 
-    plt.imshow(edges_filtered, cmap="gray")
-    plt.title("Filtered Edges")
-    plt.axis("off")
-    plt.show()
 
     edges = edges_filtered
 
-    # kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    # # ???? erode or dilate won't create non-binary values because (255,255,255) was the only process before
-    # # !!! modified So I don't think we need threshold here:
-    #
-    # # (thresh, binRed) = cv2.threshold(hist_curr, 0, 255, cv2.THRESH_BINARY)
-    #
-    # # erode is just shrinking white regions
-    # # morphologyEx can reduce smaller noise, make edges smoother
-    # edges = cv2.morphologyEx(edges, cv2.MORPH_OPEN, kernel2, iterations=3)
-    # plt.title('7')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
-    # # hough and erode strenghthen edges structures and reduce noise
-    # edges = cv2.erode(get_houghlines(edges), kernel)
-    # plt.title('8')
-    # plt.imshow(edges, cmap='gray')
-    # plt.show()
-    #
+    if count <= W:  # count is current frame index
+        edge_rep[:, :, count - 1] = edges
 
-    #
-    #
-    #
-    # if count <= W: # count is current frame index
-    #     edge_rep[:, :, count - 1] = edges
-    # else:
-    #     # no big differnece...., even add noise
-    #     # if we already have at least 10 frames
-    #     # update current edge
-    #
-    #     # turn current frame edges into (height, width, 1)
-    #     # concatenate in time dimension to (height, width, W+1)
-    #     hist_curr = np.concatenate([edge_rep, np.expand_dims(edges, 2)], axis=2)
-    #     # store all existed edges together within W frames
-    #     hist_curr = np.max(hist_curr, axis=2)   # !! Need to change to average. Lots of Artifacts.
-    #     plt.imshow(hist_curr)
-    #
-    #     # erode to reduce noise
-    #     hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
-    #     plt.imshow(hist_curr)
-    #
-    #
-    #     kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    #     # ???? erode or dilate won't create non-binary values because (255,255,255) was the only process before
-    #     # So I don't think we need threshold here:
-    #
-    #     # (thresh, binRed) = cv2.threshold(hist_curr, 0, 255, cv2.THRESH_BINARY)
-    #
-    #     # erode is just shrinking white regions
-    #     # morphologyEx can reduce smaller noise, make edges smoother
-    #     hist_curr = cv2.morphologyEx(hist_curr, cv2.MORPH_OPEN, kernel2, iterations=3)
-    #
-    #     # hough and erode strenghthen edges structures and reduce noise
-    #     hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
-    #     edges = hist_curr
-    #     # plt.imshow(edges, cmap='gray')
-    #     # plt.title(str(count)+'9')
-    #     # plt.show()
+
+
+    else:
+        # new, keep updating past 10 frames
+        edge_rep = np.roll(edge_rep, shift=-1, axis=2)
+        edge_rep[:, :, -1] = edges
+        # if we already have at least 10 frames
+        # update current edge
+
+        # turn current frame edges into (height, width, 1)
+        # concatenate in time dimension to (height, width, W+1)
+
+        edges = edges.astype(np.float32)  # instead of float64
+        edge_rep = edge_rep.astype(np.float32)
+
+        hist_curr = np.concatenate([edge_rep, np.expand_dims(edges, 2)], axis=2)
+        # store all existed edges together within W frames
+        hist_curr = np.max(hist_curr, axis=2)
+        plt.imshow(hist_curr)
+
+        # erode to reduce noise
+        hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
+        plt.imshow(hist_curr)
+
+        kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+
+        # ???? erode or dilate won't create non-binary values because (255,255,255) was the only process before
+        # So I don't think we need threshold here:
+
+        # (thresh, binRed) = cv2.threshold(hist_curr, 0, 255, cv2.THRESH_BINARY)
+
+        # erode is just shrinking white regions
+        # morphologyEx can reduce smaller noise, make edges smoother
+        hist_curr = cv2.morphologyEx(hist_curr, cv2.MORPH_OPEN, kernel2, iterations=3)
+
+        # hough and erode strenghthen edges structures and reduce noise
+        hist_curr = cv2.erode(get_houghlines(hist_curr), np.ones((10, 10)))
+        edges = hist_curr
+        plt.imshow(edges, cmap='gray')
+        plt.title(str(count)+'max')
+        plt.show()
 
     ####### Start Object segmentation with detectron2
 
@@ -671,7 +553,9 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                 classes_fil.append(0)
 
     # Determine final mask
-    if np.sum(classes_fil) == 0:  # No important objects detected  ###! Maybe show less important objects...
+    if np.sum(classes_fil) == 0:
+        break
+        # No important objects detected  ###! Maybe show less important objects...
         # Only show scene edges from previous segmentation
         masks_comb = edges  # `edges` needs to be defined elsewhere
     else:
@@ -681,7 +565,7 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
 
         # Find hand region
 
-        # // limitation is here it does not segment hand but person so if other person is also highlighted
+        # // limitation for detectron2, is here it does not segment hand but person so if other person is also highlighted
         hand_mask = np.zeros_like(masks[0])
         # either let it brighten the whole object or just the intersecting part
         circle_mask = np.zeros_like(masks[0])
@@ -693,16 +577,10 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                     mask_image1 = Image.fromarray((mask * 255).astype(np.uint8))
                     mask_image = mask*255
 
-                    # plt.figure(figsize=(10, 10))
-                    # plt.imshow(mask_image1)
-                    # plt.title("person_mask")
-                    # plt.axis("off")
-                    # plt.show()
-
                     # unique_values = np.unique(mask)
                     # print("Unique values in mask:", unique_values)
 
-                    hand_mask = np.maximum(hand_mask, mask * 255)  # 单独分出来后面可以少加一次
+                    hand_mask = np.maximum(hand_mask, mask * 255)
 
                     ys, xs = np.where(mask_image == 255)
                     # Safety check in case the mask is empty
@@ -717,14 +595,10 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
 
                     radius = np.sqrt(width**2 + height**2) / 2.0
 
-                    # print(radius) #220 #360
-                    # centroid_x = np.mean(xs)
-                    # centroid_y = np.mean(ys)
-
+                    # get arm angle in current arm
                     angle_degrees = PCA_get_angle(xs,ys,False)
 
-                    # 左上 -156 负
-                    # 右上 111 正
+                    # simulate hand position
                     if angle_degrees < 0:
                         centroid_x, centroid_y = x_min, y_min
                     elif angle_degrees > 0:
@@ -733,15 +607,15 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                         centroid_x, centroid_y = (x_min+x_max)/2, y_min
 
                     # #radius experiments
-                    # # 随机设置一些 (hand_x, hand_y) 坐标
                     # coords = generate_grid_coords(mask_image, nx=5, ny=5, margin=50)
-                    # # 调用绘制函数
                     # plot_adaptive_circles(mask_image, coords, r_min=50, r_max=400, isLinear = False)
 
 
                     # get radius
-                    # 直觉：越接近中心，表示用户更可能在专注于这部分区域，给一个更大的“可操作”半径。
-                    # 越靠边缘，可能是手刚伸进画面，或者还未准备操作；可以减小半径避免“过度亮度”或“干扰”
+                    # Intuition: The closer to the center, the more likely the user is focusing on this area, so a larger "actionable" radius is given.
+                    # Towards the edges, the hand might have just entered the frame or is not yet ready for interaction; the radius can be reduced to avoid "excessive brightness" or "distraction."
+
+                    #Linear
                     # radius = adaptive_circle_mask(mask_image, centroid_x, centroid_y, 100,400)
                     radius = exponential_circle_mask(mask_image, centroid_x, centroid_y, 100 ,400, 2.0, True)
 
@@ -750,8 +624,6 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                     cv2.circle(c_mask, (int(centroid_x), int(centroid_y)), int(radius), 255, thickness=-1)
                     circle_mask = np.maximum(circle_mask, c_mask)
                     most_recent_circle_mask = circle_mask
-
-                    # 在手上plot红色圆圈
                     # plt.figure(figsize=(8, 6))
                     # plt.imshow(mask_image,cmap="gray")
                     # plt.title("Circle on Hand/Arm Mask (Exponential Squared 2.0) [100,400]")
@@ -764,11 +636,11 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                     #     linewidth=2
                     # )
                     #
-                    # # 8. Add the circle to the current axes
+                    # Add the circle to the current axes
                     # ax = plt.gca()
                     # ax.add_patch(circle)
                     #
-                    # # 9. Show the final result
+                    # Show the final result
                     # plt.show()
 
 
@@ -807,10 +679,8 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
                     ip=0.0
                     b = 160  # Base:b2
                     if is_person:
-                        # print("有手")
                         ip = intersection_percentage(mask*255, circle_mask)
                     elif any(person_history):
-                        # print("前两frame有手")
                         ip = intersection_percentage(mask * 255, most_recent_circle_mask)
                     # No hand detected for long time
                     elif no_hand_frames >= no_hand_threshold:
@@ -820,6 +690,7 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
 
                     if ip > 0.50:
                         b = 220 # b12 only hand circle intersect
+
                     if area > min_area:
                         # edge detection
                         mask_image = Image.fromarray((mask * 255).astype(np.uint8))
@@ -850,11 +721,12 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     # unique_values = np.unique(masks_comb)
     # print("Unique values in masks_comb:", list(unique_values))
 
+
+    ## add scene edges to the frame
     b = 160 # b2
     scene_edges = edges.astype(np.float32)  # convert to float for scaling
     scene_edges *= float(b) / 255.0  # scale to [0..200]
     scene_edges = scene_edges.astype(np.uint8)  # convert back to uint8
-
     masks_comb = np.maximum(masks_comb, scene_edges)
 
     if is_person:
@@ -865,7 +737,7 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
         no_hand_frames += 1
 
     # Create output folder if it doesn't exist
-    mask_out_dir = "segmentation_output/kitchen_20fps_prioritize_noscene_final"
+    mask_out_dir = "segmentation_output/baseline_noscene_noclutter"
     if not os.path.exists(mask_out_dir):
         os.mkdir(mask_out_dir)
 
@@ -876,18 +748,12 @@ for count in np.arange(1, len(all_frames)+1 ):  # each frame !!modified +1
     plt.title('Object segmentation (b2=160, b12=220, ip>50)')
 
 
-    filename = "frame_%d_seg.jpg" % count
+    filename = "frame_%d_seg.png" % count
     filepath = os.path.join(mask_out_dir, filename)
     # plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
 
     plt.show()
-    # masks_comb_uint8 = masks_comb.astype(np.uint8)
-    # seg_filename = os.path.join(mask_out_dir, f"frame_{count:03d}_seg.jpeg")
-    # imageio.imwrite(seg_filename, masks_comb_uint8)
+    masks_comb_uint8 = masks_comb.astype(np.uint8)
+    seg_filename = os.path.join(mask_out_dir, f"frame_{count:03d}_seg.png")
+    imageio.imwrite(seg_filename, masks_comb_uint8)
 
-
-# 有个问题是，没有手的话就全部都是暗的 比如说31 32 （但是我觉得是model的问题，目前sota应该不会检测不到胳膊的存在）
-# 用dequeue检测前5个frame如果有手，就用最近的那个circlemask
-
-
-# 还有个问题，scene segmentation 比如windows 还有很多artifacts 也觉得是model的问题

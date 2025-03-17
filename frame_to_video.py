@@ -1,7 +1,7 @@
 """
 Author: Yanxiu Jin
 Date: 2025-03-17
-Description: Takes frames and output a video
+Description: Takes frames and output a video based on defined fps value
 
 """
 
