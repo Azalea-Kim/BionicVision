@@ -1,9 +1,51 @@
 #haven't tried yet
 import numpy as np
 import pulse2percept as p2p
+import cv2
 
-input_video = "depth/sample.mp4"
-output_folder = "p2p-samples/"
+input_video = "videos/baseline_combination_clip_quad.mp4"
+output_folder = "p2p-combo-5/"
+grayscale_video = "videos/baseline_combination_clip_quad_gray.mp4"
+
+
+
+# First, let's check the video properties
+cap = cv2.VideoCapture(input_video)
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+print(f"Original video: {width}x{height}, {total_frames} frames at {fps} fps")
+
+# Define new dimensions (reduce to 25% of original size)
+new_width = width // 4
+new_height = height // 4
+
+# Create VideoWriter object
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(grayscale_video, fourcc, fps, (new_width, new_height), isColor=False)
+
+# Process frames
+frame_count = 0
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+    # Convert to grayscale and resize
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (new_width, new_height))
+    out.write(resized)
+    
+    frame_count += 1
+    if frame_count % 10 == 0:
+        print(f"Processed {frame_count}/{total_frames} frames")
+
+cap.release()
+out.release()
+
+
 
 for RHO in [100, 300, 500]:
     for LAM in [0, 100, 200]:
@@ -26,7 +68,7 @@ for RHO in [100, 300, 500]:
                                                r=radius)
             implants['%dx%d' % gsize] = p2p.implants.ProsthesisSystem(egrid)
 
-        current_video = p2p.stimuli.VideoStimulus(input_video, as_gray=True)
+        current_video = p2p.stimuli.VideoStimulus(grayscale_video, as_gray=True)
         for gsize in grid_sizes:
             res = gsize[0]
             implant_key = str(res) + "x" + str(res)
