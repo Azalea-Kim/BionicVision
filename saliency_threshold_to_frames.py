@@ -12,10 +12,6 @@ local_dir = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplifica
 output_frames_dir = local_dir+"\\saliency3\\saliency_npy2image_png"
 # output_frames_dir = local_dir+"\\gaze_estimations\\kitchen_20fps\\gray"
 
-
-
-
-
 all_frames = glob.glob(output_frames_dir+"\\*.png")
 # all_frames = glob.glob(output_frames_dir+"\\*.jpg")
 

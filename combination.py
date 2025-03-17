@@ -1,3 +1,9 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Baseline Combination Scheme (using videos)
+"""
+
 import glob, os, cv2, shutil
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,13 +13,8 @@ local_path = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplific
 depth_path = local_path+"\\depth_output_npy\\kitchen20fps_monodepth2_frames.mp4"
 seg_path = local_path+"\\segmentation_output\\segmentation_video_kitchen_20fps.mp4"
 sal_path = local_path+"\\saliency_output\\saliency_video_kitchen_20fps.mp4"
-sal_path = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\saliency3\\saliency_DG3_4fixation.mp4"
-comb_path = local_path+"\\combination_output\\"
+video = "deepgaze3-gaze-90"
 
-video = "deepgaze3-4-75"
-# threshold =
-
-print(video)
 seg_v = cv2.VideoCapture(seg_path)
 sal_v = cv2.VideoCapture(sal_path)
 dep_v = cv2.VideoCapture(depth_path)
@@ -27,18 +28,11 @@ def print_video_size(cap, video_name):
     height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     print(f"{video_name} size: {int(width)}x{int(height)}")
 
-# print_video_size(seg_v, "seg")
-# print_video_size(sal_v, "sal")
-# print_video_size(dep_v, "dep")
-
-
 fps = 20
 size = (1920, 1440)
-# vid_pathOut = comb_path + "/%s.avi" % video
-# out = cv2.VideoWriter(vid_pathOut, cv2.VideoWriter_fourcc(*'DIVX'), fps, size)
-vid_pathOut = comb_path + "/%s.mp4" % video  # Change extension to .mp4
 
-# Use 'mp4v' codec for MP4 output
+vid_pathOut = comb_path + "/%s.mp4" % video
+
 out = cv2.VideoWriter(vid_pathOut, cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
 
 
@@ -55,8 +49,7 @@ while success1 and success2 and success3:
         break
 
     sal_fil = sal.copy()
-    threshold = np.max(sal_fil) * .75  #.90
-    # print(threshold)
+    threshold = np.max(sal_fil) * .90  # change threshold
     sal_fil[sal_fil <= threshold] = 0
     sal_fil[sal_fil > 0] = 255
 
@@ -71,14 +64,14 @@ while success1 and success2 and success3:
     dep_seg_sal = dep_norm[:, :, 0].copy()
     dep_seg_sal[seg_sal == 0] = 0
 
-    # result = dep_seg_sal.copy() * 255
-    # result = seg_sal.copy()*255
-    result = sal_norm.copy()*255
-    out.write(np.uint8(result))
+    result = dep_seg_sal.copy() * 255
+    # result1 = seg_sal.copy()*255 # get only segmentation + saliency
+    # result2 = sal_norm.copy()*255 # get threshold saliency
+    # out.write(np.uint8(result1))
+    # out.write(np.uint8(result2))
 
-
-    # result3 = cv2.merge([result, result, result])
-    # out.write(np.uint8(result3))
+    result3 = cv2.merge([result, result, result])
+    out.write(np.uint8(result3))
 
 out.release()
 cv2.destroyAllWindows()

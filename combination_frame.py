@@ -1,3 +1,10 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Combination per frame
+"""
+
+
 import cv2
 import numpy as np
 import os
@@ -8,32 +15,17 @@ import matplotlib.pyplot  as plt
 import glob
 
 local_path = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master"
-depth_path = local_path+"\\depth_output_npy\\kitchen20fps_monodepth2_frames_clip_quad\\frame_011.png"
-seg_path = local_path+"\\segmentation_output\\detectron_baseline\\frame_011_seg.png"
-sal_path = local_path+"\\saliency_output\\kitchen20fps\\saliency_frame_011.jpg"
-
-
-
-# seg_path = local_path + "\\deva_outputs\\masks\\frame_00010.png"
-# sal_path = local_path+"\\saliency3\\saliency_npy2image_95\\frame_010_saliency.png"
-# depth_path = local_path+"\\depth_output_npy\\kitchen20fps_TCMono_frames\\frame_011_depth.png"
-#
-
-
-seg_path = local_path + "\\deva_outputs\\masks"
-sal_path = local_path+"\\saliency3\\saliency_npy2image_95"
+seg_path = local_path + "\\segmentation_output\\DEVA_base_clutter"
+sal_path = local_path+"\\saliency3\\saliency_npy2image_png"
 depth_path = local_path+"\\depth_output_npy\\kitchen20fps_TCMono_frames"
 
 
 all_frames = glob.glob(seg_path+"\\*.png")
-# all_frames = glob.glob(output_frames_dir+"\\*.jpg")
 
-for count in np.arange(0, len(all_frames) ):  # for deepgaze3 format
-# for count in np.arange(1, len(all_frames) +1):  # each frame !!modified +1
-    seg_name = seg_path+"\\frame_%05d.png" % count
+for count in np.arange(0, len(all_frames) ):
+    seg_name = seg_path+"\\frame_%05d_seg.png" % count
     seg_img = cv2.imread(seg_name, cv2.IMREAD_GRAYSCALE)
     seg = np.uint8(seg_img)
-
 
     sal_name = sal_path+"\\frame_%03d_saliency.png" % count
     sal_img = cv2.imread(sal_name, cv2.IMREAD_GRAYSCALE)
@@ -46,8 +38,8 @@ for count in np.arange(0, len(all_frames) ):  # for deepgaze3 format
 
     # Threshold the saliency map
     sal_fil = sal.copy()
-    threshold = np.max(sal_fil) * .50  #.90
-    # print(threshold)
+    threshold = np.max(sal_fil) * .95  # change threshold
+
     sal_fil[sal_fil <= threshold] = 0
     sal_fil[sal_fil > 0] = 255
 
@@ -58,9 +50,6 @@ for count in np.arange(0, len(all_frames) ):  # for deepgaze3 format
 
     seg_norm = cv2.resize(seg_norm, (sal_norm.shape[1], sal_norm.shape[0]))
     dep_norm = cv2.resize(dep_norm, (sal_norm.shape[1], sal_norm.shape[0]))
-    # seg_sal = np.max((sal_norm[:, :, 0], seg_norm[:, :, 0]), axis=0)
-    # dep_seg_sal = dep_norm[:, :, 0].copy()
-    # dep_seg_sal[seg_sal == 0] = 0
 
     seg_sal = np.maximum(sal_norm, seg_norm)  # Element-wise max of saliency and segmentation
     dep_seg_sal = dep_norm.copy()  # No need for indexing
@@ -68,8 +57,6 @@ for count in np.arange(0, len(all_frames) ):  # for deepgaze3 format
 
 
     result = dep_seg_sal.copy() * 255
-
-
     result2 = seg_sal.copy()*255
     result3 = sal_norm.copy()*255
 
@@ -90,8 +77,9 @@ for count in np.arange(0, len(all_frames) ):  # for deepgaze3 format
 
     plt.show()
 
-    mask_out_dir = local_path + "\\temporal_combination"
+    mask_out_dir = local_path + "\\temporal_comb_segbase+depth+sal"
+    if not os.path.exists(mask_out_dir):
+        os.mkdir(mask_out_dir)
 
-    comb_filename = os.path.join(mask_out_dir, f"frame_{count:03d}_comb_temp.png")
-    # comb_filename = os.path.join(mask_out_dir, f"frame_011_comb_temp.png")
+    comb_filename = os.path.join(mask_out_dir, f"frame_{count:03d}_comb.png")
     imageio.imwrite(comb_filename, np.uint8(result))

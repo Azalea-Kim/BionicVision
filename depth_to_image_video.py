@@ -1,3 +1,10 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Baseline implementation of converting depth to brightness map, also produce a video
+
+"""
+
 import math
 import numpy as np
 import cv2
@@ -74,24 +81,14 @@ import imageio
 
 
 def gen_depth_videos(folder, mode, min_brightness, max_brightness, clipped=False, p=95, save_frames_folder=""):
-    # # num_frames = len(os.listdir(folder))
-    # num_frames = len([f for f in os.listdir(folder) if f.endswith("_disp.jpeg")])
-    # # depth_list = [np.squeeze(np.load("{}\\frame_{:03d}_disp.npy".format(folder, i))) for i in range(1,num_frames+1)]
-    # ## !!! problem still too bright
-    # depth_list = [np.squeeze(np.load("{}\\frame_{:03d}_depth.npy".format(folder, i))) for i in range(1, num_frames + 1)]
-    # # disparity value big in near place
-    # depth_shape = depth_list[0].shape
-
-    # For temporal depth
-    # num_frames = len(os.listdir(folder))
     num_frames = len([f for f in os.listdir(folder) if f.endswith(".jpeg")])
     print(num_frames)
     # depth_list = [np.squeeze(np.load("{}\\frame_{:03d}_disp.npy".format(folder, i))) for i in range(1,num_frames+1)]
-    ## !!! problem still too bright
+
     ## change file names if needed
     depth_list = [np.squeeze(np.load("{}\\frame_{:03d}_depth.npy".format(folder, i))) for i in range(1, num_frames + 1)]
-    # disparity value big in near place
     depth_shape = depth_list[0].shape
+
 
 
     if clipped:
@@ -107,10 +104,11 @@ def gen_depth_videos(folder, mode, min_brightness, max_brightness, clipped=False
 
     # save frames
     if save_frames_folder:
+        print("save")
         if not os.path.exists(save_frames_folder):
             os.makedirs(save_frames_folder)
         for i, img in enumerate(final_images):
-            frame_filename = os.path.join(save_frames_folder, f"frame_{i+1:03d}.jpeg")
+            frame_filename = os.path.join(save_frames_folder, f"frame_{i+1:03d}.png")
             imageio.imwrite(frame_filename, img)
 
     w = imageio.get_writer(save_frames_folder+"kitchen20fps_monodepth2.mp4", mode='I', fps=20)
@@ -119,21 +117,19 @@ def gen_depth_videos(folder, mode, min_brightness, max_brightness, clipped=False
     w.close()
 
 folder = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\depth_output_npy\\kitchen20fps_monodepth2"
-save_frames_folder ="D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\depth_output_npy\\kitchen20fps_monodepth2_frames\\"
+save_frames_folder ="D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\depth_output_npy\\kitchen20fps_monodepth2_frames_clip_quad\\"
 # gen_depth_videos(folder, mode="linear", min_brightness=0, max_brightness=180, clipped=True, p=80)
 # gen_depth_videos(folder, mode="quadratic", min_brightness=0, max_brightness=180, clipped=False, p=80, save_frames_folder=save_frames_folder)
-gen_depth_videos(folder, mode="exponential", min_brightness=0, max_brightness=180, clipped=False, p=80, save_frames_folder=save_frames_folder)
+
+
+# gen_depth_videos(folder, mode="quad", min_brightness=0, max_brightness=180, clipped=False, p=80, save_frames_folder=save_frames_folder)
+
+
+gen_depth_videos(folder, mode="quad", min_brightness=0, max_brightness=180, clipped=True, p=80, save_frames_folder=save_frames_folder)
 
 # Exponential mapping makes depth changes more dramatic at close distances while becoming more gradual at farther distances, aligning with human perception.
 # It is the most natural way to represent depth perception.
-
 # Disparity maps exhibit dramatic changes in close-range areas while remaining nearly unchanged in distant regions,
 # making them suitable for short-distance scenarios such as indoor environments.
-
-
 # use quadratic when disp
-
-
-
-
 

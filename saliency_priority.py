@@ -1,39 +1,29 @@
-
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Create a circle mask around high saliency region and highlight pixels in the mask
+Initial try for saliency priority, not final
+"""
 import matplotlib.pyplot as plt
 
 import cv2
 import numpy as np
 
 def create_circle_mask_from_sal(sal_fill):
-    """
-    sal_fill: a binary (0/255) mask with one or more white regions.
-
-    Returns:
-        circle_mask: a binary mask (same shape) with a filled circle (white=255)
-                     that encloses the largest white region from sal_fill.
-    """
-    # 1. Ensure sal_fill is single-channel, uint8
     if len(sal_fill.shape) == 3 and sal_fill.shape[2] == 3:
         sal_fill = cv2.cvtColor(sal_fill, cv2.COLOR_BGR2GRAY)
     sal_fill = sal_fill.astype(np.uint8)
 
-    # 2. Find contours
     contours, _ = cv2.findContours(sal_fill, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        # No contours => return an empty mask
         return np.zeros_like(sal_fill, dtype=np.uint8)
-
-    # 3. Pick the largest contour (by area)
     largest_contour = max(contours, key=cv2.contourArea)
 
-    # If the contour is too small, just return empty
     if len(largest_contour) < 5:
         return np.zeros_like(sal_fill, dtype=np.uint8)
 
-    # 4. Fit a minimum enclosing circle
     (cx, cy), radius = cv2.minEnclosingCircle(largest_contour)
 
-    # 5. Draw a filled circle on a blank mask
     circle_mask = np.zeros_like(sal_fill, dtype=np.uint8)
     cv2.circle(circle_mask, (int(cx), int(cy)), int(radius), 255, thickness=-1)
 
@@ -42,7 +32,6 @@ def create_circle_mask_from_sal(sal_fill):
 seg_img = cv2.imread("D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\segmentation_output\\kitchen_20fps_prioritize_noscene_final_png\\frame_163_seg.png",
                      cv2.IMREAD_GRAYSCALE)
 
-# Check if the image was loaded successfully
 seg = np.uint8(seg_img)
 
 sal_img = cv2.imread("D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master\\gaze_estimations\\kitchen_20fps\\gray\\gray_frame_163.jpg"
@@ -79,11 +68,7 @@ plt.show()
 
 seg_sal = np.maximum(seg,sal_fil)
 seg_sal = np.where(seg == 0, seg, seg_sal)
-#
-# print("seg unique:", np.unique(seg))
-# print("seg_sal unique:", np.unique(seg_sal))
-#
-#
+
 
 intersection = np.where((seg > 0) & (sal_fil > 0), 1, 0).astype(np.uint8)
 # If seg is already uint8 in [0..255], convert to 3-channel

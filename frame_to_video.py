@@ -1,8 +1,14 @@
+"""
+Author: Yanxiu Jin
+Date: 2025-03-17
+Description: Takes frames and output a video
+
+"""
+
 import os
 import cv2
 import imageio
 import numpy as np
-
 
 def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
     frames = []  # Store saliency maps of each frame
@@ -16,6 +22,7 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
 
         # Check if the file is a valid image file (you can add more formats if needed)
         if frame_path.endswith('.jpg') or frame_path.endswith('.png') or frame_path.endswith('.jpeg'):
+        # if frame_path.endswith('.jpg'):
             frame = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)  # Read as grayscale for saliency maps
             if frame is not None:
                 frames.append(frame)
@@ -23,15 +30,20 @@ def create_video_from_frames(input_folder, output_video_path, frame_rate=20):
             else:
                 print(f"Failed to load {frame_path}")
 
+
     # Create a writer object with imageio
-    with imageio.get_writer(output_video_path, fps=frame_rate) as writer:
+    with imageio.get_writer(output_video_path, fps=frame_rate, codec='libx264') as writer:
         # Write each frame to the video
         for frame in frames:
             writer.append_data(frame)  # Append the saliency map as a frame
         print(f"Video saved to {output_video_path}")
 
 
-input_folder = 'C:/Users/ronki/OneDrive/Documents/GitHub/BionicVision/data/saliency_output'
-output_video_path = 'C:/Users/ronki/OneDrive/Documents/GitHub/BionicVision/data/saliency_output/kitchen.mp4'
+# Define the paths
+local_dir = "D:\\2021-han-scene-simplification-master\\2021-han-scene-simplification-master"
+input_folder = local_dir+ "\\temporal_comb_segbase+depth+sal"
+output_video_path = input_folder + "\\temporal_comb_segbase+depth+sal.mp4"
 
+
+# Create a video
 create_video_from_frames(input_folder, output_video_path)
