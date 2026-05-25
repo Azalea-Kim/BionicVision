@@ -363,23 +363,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    frames = selected_frames(args.frame_dir, args.max_frames)
+    frame_dir = args.frame_dir.resolve()
+    output_root = args.output_root.resolve()
+    frames = selected_frames(frame_dir, args.max_frames)
     device = get_device(args.device)
-    args.output_root.mkdir(parents=True, exist_ok=True)
-    input_dir = prepare_inputs(frames, args.output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    input_dir = prepare_inputs(frames, output_root)
 
     if "deepgaze" in args.models:
-        run_deepgaze(frames, args.output_root, device)
+        run_deepgaze(frames, output_root, device)
     if "detectron2" in args.models:
-        run_detectron2(frames, args.output_root, device)
+        run_detectron2(frames, output_root, device)
     if "mit" in args.models:
-        run_mit_scene_parsing(frames, args.output_root, device)
+        run_mit_scene_parsing(frames, output_root, device)
     if "monodepth2" in args.models:
-        run_monodepth2(input_dir, args.output_root, device)
+        run_monodepth2(input_dir, output_root, device)
     if "tcmonodepth" in args.models:
-        run_tc_monodepth(frames, args.output_root, device)
+        run_tc_monodepth(frames, output_root, device)
     if "deva" in args.models:
-        run_deva(input_dir, args.output_root)
+        run_deva(input_dir, output_root)
 
 
 if __name__ == "__main__":
