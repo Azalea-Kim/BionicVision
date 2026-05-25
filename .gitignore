@@ -5,4 +5,5 @@ outputs/
 *.mp4
 *.pyc
 .venv/
+.venv-models
 .venv-models/
