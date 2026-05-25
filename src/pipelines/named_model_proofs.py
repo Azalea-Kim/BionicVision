@@ -324,10 +324,14 @@ def run_deva(input_dir: Path, output_root: Path) -> None:
 
     old_argv = sys.argv
     sys.argv = argv
+    use_cuda = torch.cuda.is_available()
+    device_context = contextlib.nullcontext() if use_cuda else cpu_cuda_shim()
+    sam_device = "cuda" if use_cuda else "cpu"
+
     try:
-        with cpu_cuda_shim():
+        with device_context:
             deva_model, cfg, args = get_model_and_config(parser)
-            sam_model = get_sam_model(cfg, "cpu")
+            sam_model = get_sam_model(cfg, sam_device)
             cfg["temporal_setting"] = args.temporal_setting.lower()
             video_reader = SimpleVideoReader(cfg["img_path"])
             loader = DataLoader(video_reader, batch_size=None, collate_fn=no_collate, num_workers=0)
