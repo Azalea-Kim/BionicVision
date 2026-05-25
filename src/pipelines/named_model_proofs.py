@@ -337,6 +337,15 @@ def run_deva(input_dir: Path, output_root: Path) -> None:
             cfg["temporal_setting"] = args.temporal_setting.lower()
             video_reader = SimpleVideoReader(cfg["img_path"])
             loader = DataLoader(video_reader, batch_size=None, collate_fn=no_collate, num_workers=0)
+            video_length = len(loader)
+            cfg["enable_long_term_count_usage"] = (
+                cfg["enable_long_term"]
+                and (
+                    video_length / (cfg["max_mid_term_frames"] - cfg["min_mid_term_frames"])
+                    * cfg["num_prototypes"]
+                )
+                >= cfg["max_long_term_elements"]
+            )
             deva = DEVAInferenceCore(deva_model, config=cfg)
             deva.next_voting_frame = args.num_voting_frames - 1
             deva.enabled_long_id()
