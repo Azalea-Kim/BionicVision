@@ -44,6 +44,8 @@ def selected_frames(frame_dir: Path, max_frames: int) -> list[Path]:
 
 def prepare_inputs(frames: list[Path], output_root: Path) -> Path:
     input_dir = output_root / "inputs"
+    if input_dir.exists():
+        shutil.rmtree(input_dir)
     input_dir.mkdir(parents=True, exist_ok=True)
     for index, frame in enumerate(frames, start=1):
         shutil.copy2(frame, input_dir / f"{index:05d}_{frame.name}")
@@ -209,11 +211,18 @@ def run_mit_scene_parsing(frames: list[Path], output_root: Path, device: torch.d
 
 def run_monodepth2(input_dir: Path, output_root: Path, device: torch.device) -> None:
     monodepth_root = EXTERNAL / "depth" / "monodepth2"
+    work_input_dir = output_root / "depth" / "monodepth2_inputs"
+    if work_input_dir.exists():
+        shutil.rmtree(work_input_dir)
+    work_input_dir.mkdir(parents=True, exist_ok=True)
+    for image in sorted(input_dir.glob("*.jpg")):
+        shutil.copy2(image, work_input_dir / image.name)
+
     command = [
         str(PYTHON),
         "test_simple.py",
         "--image_path",
-        str(input_dir),
+        str(work_input_dir),
         "--model_name",
         "mono_640x192",
         "--ext",
@@ -224,7 +233,7 @@ def run_monodepth2(input_dir: Path, output_root: Path, device: torch.device) -> 
     subprocess.run(command, cwd=monodepth_root, check=True)
     dest = output_root / "depth" / "monodepth2"
     dest.mkdir(parents=True, exist_ok=True)
-    for image in sorted(input_dir.glob("*_disp.jpeg")):
+    for image in sorted(work_input_dir.glob("*_disp.jpeg")):
         shutil.copy2(image, dest / image.name)
 
 
