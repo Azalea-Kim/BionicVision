@@ -86,10 +86,15 @@ def normalize01(values: np.ndarray) -> np.ndarray:
     return np.clip((values - lo) / (hi - lo), 0.0, 1.0)
 
 
-def run_deepgaze(frames: list[Path], output_root: Path) -> None:
+def get_device(name: str) -> torch.device:
+    if name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is false")
+    return torch.device(name)
+
+
+def run_deepgaze(frames: list[Path], output_root: Path, device: torch.device) -> None:
     import deepgaze_pytorch
 
-    device = torch.device("cpu")
     centerbias_path = ROOT / "src" / "models" / "saliency" / "deepgaze3" / "centerbias_mit1003.npy"
     centerbias_template = np.load(centerbias_path)
 
@@ -136,7 +141,7 @@ def run_deepgaze(frames: list[Path], output_root: Path) -> None:
         )
 
 
-def run_detectron2(frames: list[Path], output_root: Path) -> None:
+def run_detectron2(frames: list[Path], output_root: Path, device: torch.device) -> None:
     from detectron2 import model_zoo
     from detectron2.config import get_cfg
     from detectron2.data import MetadataCatalog
@@ -145,7 +150,7 @@ def run_detectron2(frames: list[Path], output_root: Path) -> None:
 
     cfg = get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.MODEL.DEVICE = "cpu"
+    cfg.MODEL.DEVICE = device.type
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5
     cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
     predictor = DefaultPredictor(cfg)
@@ -161,7 +166,7 @@ def run_detectron2(frames: list[Path], output_root: Path) -> None:
         save_rgb(rendered, output_root / "segmentation" / "detectron2" / f"{frame.stem}.png")
 
 
-def run_mit_scene_parsing(frames: list[Path], output_root: Path) -> None:
+def run_mit_scene_parsing(frames: list[Path], output_root: Path, device: torch.device) -> None:
     from mit_semseg.models import ModelBuilder, SegmentationModule
     from mit_semseg.utils import colorEncode
     import torchvision.transforms as transforms
@@ -182,7 +187,7 @@ def run_mit_scene_parsing(frames: list[Path], output_root: Path) -> None:
         weights=str(weights / "decoder_epoch_20.pth"),
         use_softmax=True,
     )
-    segmentation_module = SegmentationModule(encoder, decoder, torch.nn.NLLLoss(ignore_index=-1)).eval()
+    segmentation_module = SegmentationModule(encoder, decoder, torch.nn.NLLLoss(ignore_index=-1)).to(device).eval()
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
@@ -192,7 +197,7 @@ def run_mit_scene_parsing(frames: list[Path], output_root: Path) -> None:
     for frame in frames:
         image = Image.open(frame).convert("RGB")
         image_np = np.asarray(image)
-        tensor = normalize(to_tensor(image)).unsqueeze(0)
+        tensor = normalize(to_tensor(image)).unsqueeze(0).to(device)
         with torch.no_grad():
             scores = segmentation_module({"img_data": tensor}, segSize=image_np.shape[:2])
             _, prediction = torch.max(scores, dim=1)
@@ -202,36 +207,33 @@ def run_mit_scene_parsing(frames: list[Path], output_root: Path) -> None:
         save_rgb(overlay, output_root / "segmentation" / "mit_scene_parsing" / f"{frame.stem}.png")
 
 
-def run_monodepth2(input_dir: Path, output_root: Path) -> None:
+def run_monodepth2(input_dir: Path, output_root: Path, device: torch.device) -> None:
     monodepth_root = EXTERNAL / "depth" / "monodepth2"
-    subprocess.run(
-        [
-            str(PYTHON),
-            "test_simple.py",
-            "--image_path",
-            str(input_dir),
-            "--model_name",
-            "mono_640x192",
-            "--ext",
-            "jpg",
-            "--no_cuda",
-        ],
-        cwd=monodepth_root,
-        check=True,
-    )
+    command = [
+        str(PYTHON),
+        "test_simple.py",
+        "--image_path",
+        str(input_dir),
+        "--model_name",
+        "mono_640x192",
+        "--ext",
+        "jpg",
+    ]
+    if device.type == "cpu":
+        command.append("--no_cuda")
+    subprocess.run(command, cwd=monodepth_root, check=True)
     dest = output_root / "depth" / "monodepth2"
     dest.mkdir(parents=True, exist_ok=True)
     for image in sorted(input_dir.glob("*_disp.jpeg")):
         shutil.copy2(image, dest / image.name)
 
 
-def run_tc_monodepth(frames: list[Path], output_root: Path) -> None:
+def run_tc_monodepth(frames: list[Path], output_root: Path, device: torch.device) -> None:
     tc_root = EXTERNAL / "depth" / "TCMonoDepth"
     sys.path.insert(0, str(tc_root))
     from networks import TCSmallNet
     from networks.transforms import PrepareForNet, Resize
 
-    device = torch.device("cpu")
     args = SimpleNamespace()
     model = TCSmallNet(args)
     checkpoint = torch.load(tc_root / "weights" / "_ckpt_small.pt.tar", map_location="cpu")
@@ -352,6 +354,7 @@ def main() -> None:
     parser.add_argument("--frame-dir", type=Path, default=DEFAULT_FRAMES)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--max-frames", type=int, default=3)
+    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(
         "--models",
         nargs="+",
@@ -361,19 +364,20 @@ def main() -> None:
     args = parser.parse_args()
 
     frames = selected_frames(args.frame_dir, args.max_frames)
+    device = get_device(args.device)
     args.output_root.mkdir(parents=True, exist_ok=True)
     input_dir = prepare_inputs(frames, args.output_root)
 
     if "deepgaze" in args.models:
-        run_deepgaze(frames, args.output_root)
+        run_deepgaze(frames, args.output_root, device)
     if "detectron2" in args.models:
-        run_detectron2(frames, args.output_root)
+        run_detectron2(frames, args.output_root, device)
     if "mit" in args.models:
-        run_mit_scene_parsing(frames, args.output_root)
+        run_mit_scene_parsing(frames, args.output_root, device)
     if "monodepth2" in args.models:
-        run_monodepth2(input_dir, args.output_root)
+        run_monodepth2(input_dir, args.output_root, device)
     if "tcmonodepth" in args.models:
-        run_tc_monodepth(frames, args.output_root)
+        run_tc_monodepth(frames, args.output_root, device)
     if "deva" in args.models:
         run_deva(input_dir, args.output_root)
 
