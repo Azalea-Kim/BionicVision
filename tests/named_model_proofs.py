@@ -28,11 +28,65 @@ import torch
 from torchvision.transforms import Compose
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 EXTERNAL = ROOT / "external" / "model_sources"
-DEFAULT_FRAMES = ROOT / "outputs" / "model_proofs" / "frames"
+DEFAULT_CLIP_DIR = ROOT / "data" / "epic_kitchens" / "clips_10s"
 DEFAULT_OUTPUT = ROOT / "outputs" / "named_model_proofs"
 PYTHON = ROOT / ".venv-models" / "bin" / "python"
+
+
+MODEL_OUTPUT_DIRS = {
+    "deepgaze_ii": ("saliency/deepgaze_ii", "*.png"),
+    "deepgaze_iii": ("saliency/deepgaze_iii", "*.png"),
+    "detectron2": ("segmentation/detectron2", "*.png"),
+    "mit_scene_parsing": ("segmentation/mit_scene_parsing", "*.png"),
+    "monodepth2": ("depth/monodepth2", "*.jpeg"),
+    "tc_monodepth": ("depth/tc_monodepth", "*.png"),
+    "deva_annotations": ("segmentation/deva/Annotations", "*.png"),
+    "deva_visualizations": ("segmentation/deva/Visualizations", "*.jpg"),
+}
+
+
+def sample_frames_from_clips(clip_dir: Path, output_root: Path, max_frames: int) -> tuple[list[Path], Path]:
+    clips = sorted(clip_dir.glob("*.mp4"))
+    if not clips:
+        raise FileNotFoundError(f"No MP4 clips found in {clip_dir}")
+
+    input_dir = output_root / "inputs"
+    if input_dir.exists():
+        shutil.rmtree(input_dir)
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    samples_per_clip = max(1, int(np.ceil(max_frames / len(clips))))
+    frames: list[Path] = []
+    frame_index = 1
+    for clip in clips:
+        capture = cv2.VideoCapture(str(clip))
+        if not capture.isOpened():
+            raise FileNotFoundError(f"Could not open video: {clip}")
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count <= 0:
+            capture.release()
+            continue
+        indices = np.linspace(0, max(frame_count - 1, 0), samples_per_clip + 2, dtype=int)[1:-1]
+        for sample_index, source_index in enumerate(indices, start=1):
+            if len(frames) >= max_frames:
+                break
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(source_index))
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            output_path = input_dir / f"{frame_index:05d}_{clip.stem}_sample{sample_index:02d}.jpg"
+            cv2.imwrite(str(output_path), frame)
+            frames.append(output_path)
+            frame_index += 1
+        capture.release()
+        if len(frames) >= max_frames:
+            break
+
+    if not frames:
+        raise RuntimeError(f"No sample frames could be extracted from {clip_dir}")
+    return frames, input_dir
 
 
 def selected_frames(frame_dir: Path, max_frames: int) -> list[Path]:
@@ -367,11 +421,76 @@ def run_deva(input_dir: Path, output_root: Path) -> None:
         sys.argv = old_argv
 
 
+
+def output_counts(output_root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name, (relative_dir, pattern) in MODEL_OUTPUT_DIRS.items():
+        counts[name] = len(list((output_root / relative_dir).glob(pattern)))
+    return counts
+
+
+def assert_expected_outputs(output_root: Path, expected_frames: int) -> dict[str, int]:
+    counts = output_counts(output_root)
+    missing = {name: count for name, count in counts.items() if count < expected_frames}
+    if missing:
+        details = ", ".join(f"{name}={count}" for name, count in sorted(missing.items()))
+        raise AssertionError(f"Expected at least {expected_frames} outputs per model; got {details}")
+
+    empty_files = [path for path in output_root.rglob("*") if path.is_file() and path.stat().st_size == 0]
+    if empty_files:
+        raise AssertionError(f"Empty proof output files: {empty_files[:5]}")
+    return counts
+
+
+def run_named_model_proofs(
+    *,
+    clip_dir: Path = DEFAULT_CLIP_DIR,
+    frame_dir: Path | None = None,
+    output_root: Path = DEFAULT_OUTPUT,
+    max_frames: int = 6,
+    device: str = "cuda",
+    models: list[str] | None = None,
+    clean: bool = True,
+) -> dict[str, object]:
+    if models is None:
+        models = ["deepgaze", "detectron2", "mit", "monodepth2", "tcmonodepth", "deva"]
+
+    output_root = output_root.resolve()
+    if clean and output_root.exists():
+        shutil.rmtree(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    if frame_dir is None:
+        frames, input_dir = sample_frames_from_clips(clip_dir.resolve(), output_root, max_frames)
+    else:
+        frames = selected_frames(frame_dir.resolve(), max_frames)
+        input_dir = prepare_inputs(frames, output_root)
+
+    device_obj = get_device(device)
+
+    if "deepgaze" in models:
+        run_deepgaze(frames, output_root, device_obj)
+    if "detectron2" in models:
+        run_detectron2(frames, output_root, device_obj)
+    if "mit" in models:
+        run_mit_scene_parsing(frames, output_root, device_obj)
+    if "monodepth2" in models:
+        run_monodepth2(input_dir, output_root, device_obj)
+    if "tcmonodepth" in models:
+        run_tc_monodepth(frames, output_root, device_obj)
+    if "deva" in models:
+        run_deva(input_dir, output_root)
+
+    counts = output_counts(output_root)
+    return {"frames": len(frames), "output_root": str(output_root), "counts": counts}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run proof images for the named project models.")
-    parser.add_argument("--frame-dir", type=Path, default=DEFAULT_FRAMES)
+    parser.add_argument("--clip-dir", type=Path, default=DEFAULT_CLIP_DIR)
+    parser.add_argument("--frame-dir", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--max-frames", type=int, default=3)
+    parser.add_argument("--max-frames", type=int, default=6)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(
         "--models",
@@ -380,26 +499,15 @@ def main() -> None:
         choices=["deepgaze", "detectron2", "mit", "monodepth2", "tcmonodepth", "deva"],
     )
     args = parser.parse_args()
-
-    frame_dir = args.frame_dir.resolve()
-    output_root = args.output_root.resolve()
-    frames = selected_frames(frame_dir, args.max_frames)
-    device = get_device(args.device)
-    output_root.mkdir(parents=True, exist_ok=True)
-    input_dir = prepare_inputs(frames, output_root)
-
-    if "deepgaze" in args.models:
-        run_deepgaze(frames, output_root, device)
-    if "detectron2" in args.models:
-        run_detectron2(frames, output_root, device)
-    if "mit" in args.models:
-        run_mit_scene_parsing(frames, output_root, device)
-    if "monodepth2" in args.models:
-        run_monodepth2(input_dir, output_root, device)
-    if "tcmonodepth" in args.models:
-        run_tc_monodepth(frames, output_root, device)
-    if "deva" in args.models:
-        run_deva(input_dir, output_root)
+    result = run_named_model_proofs(
+        clip_dir=args.clip_dir,
+        frame_dir=args.frame_dir,
+        output_root=args.output_root,
+        max_frames=args.max_frames,
+        device=args.device,
+        models=args.models,
+    )
+    print(result)
 
 
 if __name__ == "__main__":
