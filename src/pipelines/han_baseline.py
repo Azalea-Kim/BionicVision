@@ -1,10 +1,10 @@
 """Han et al. 2021 baseline pipeline on EPIC-KITCHENS clips.
 
 This module ports the operations in bionicvisionlab/2021-han-scene-simplification
-for local EPIC-KITCHENS 10-second clips. It intentionally uses the same model
-families and fixed class rules: Monodepth2 depth, FASA saliency, MIT scene
-parsing structure edges, Detectron2 COCO object masks, and the saliency OR
-segmentation depth-combination rule.
+for local EPIC-KITCHENS 10-second clips. The ``han`` profile preserves the
+paper's original outdoor-mobility assumptions. The ``epic_indoor`` profile keeps
+the same model families and fusion rule, but updates class filters and disparity
+rendering so the baseline is meaningful on indoor egocentric kitchen footage.
 """
 
 from __future__ import annotations
@@ -33,24 +33,106 @@ DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "han_baseline_epic10"
 
 HAN_ADE20K_STRUCTURE_CLASSES = (6, 11)
 HAN_COCO_IMPORTANT_CLASSES = (0, 1, 2, 5, 7)
+EPIC_ADE20K_STRUCTURE_CLASSES = (
+    0,  # wall
+    3,  # floor
+    5,  # ceiling
+    8,  # window
+    10,  # cabinet
+    14,  # door
+    15,  # table
+    20,  # chair
+    24,  # shelf
+    46,  # counter
+    47,  # sink
+    50,  # refrigerator
+    71,  # countertop
+    72,  # stove
+    118,  # oven
+    124,  # microwave
+)
+EPIC_COCO_IMPORTANT_CLASSES = (
+    0,  # person
+    24,  # backpack
+    26,  # handbag
+    39,  # bottle
+    40,  # wine glass
+    41,  # cup
+    42,  # fork
+    43,  # knife
+    44,  # spoon
+    45,  # bowl
+    46,  # banana
+    47,  # apple
+    48,  # sandwich
+    49,  # orange
+    50,  # broccoli
+    51,  # carrot
+    52,  # hot dog
+    53,  # pizza
+    54,  # donut
+    55,  # cake
+    56,  # chair
+    60,  # dining table
+    62,  # tv
+    63,  # laptop
+    65,  # remote
+    67,  # cell phone
+    68,  # microwave
+    69,  # oven
+    70,  # toaster
+    71,  # sink
+    72,  # refrigerator
+    73,  # book
+    75,  # vase
+    76,  # scissors
+    79,  # toothbrush
+)
 
 
 @dataclass(frozen=True)
 class HanBaselineConfig:
+    profile: str = "han"
     target_fps: float = 20.0
     max_frames: int | None = None
     device: str = "cuda"
     depth_mode: str = "exponential"
+    depth_source: str = "han_disparity_as_depth"
     depth_min_brightness: int = 0
     depth_max_brightness: int = 180
     depth_clip_percentile: float = 80.0
     saliency_bins: int = 8
     saliency_threshold_fraction: float = 0.90
+    structure_class_ids: tuple[int, ...] = HAN_ADE20K_STRUCTURE_CLASSES
+    important_coco_classes: tuple[int, ...] = HAN_COCO_IMPORTANT_CLASSES
     structure_min_region_area: int = 16000
     hough_window: int = 10
     hough_min_line_length: int = 200
     hough_max_line_gap: int = 1
     detectron_score_threshold: float = 0.5
+
+
+def make_han_baseline_config(
+    profile: str,
+    *,
+    target_fps: float,
+    max_frames: int | None,
+    device: str,
+) -> HanBaselineConfig:
+    if profile == "han":
+        return HanBaselineConfig(target_fps=target_fps, max_frames=max_frames, device=device)
+    if profile == "epic_indoor":
+        return HanBaselineConfig(
+            profile=profile,
+            target_fps=target_fps,
+            max_frames=max_frames,
+            device=device,
+            depth_source="disparity",
+            structure_class_ids=EPIC_ADE20K_STRUCTURE_CLASSES,
+            important_coco_classes=EPIC_COCO_IMPORTANT_CLASSES,
+            hough_min_line_length=80,
+        )
+    raise ValueError(f"Unknown Han baseline profile: {profile}")
 
 
 def ensure_cuda_if_requested(device: str) -> torch.device:
@@ -113,9 +195,19 @@ def depth_linear_map(depth_map: np.ndarray, max_depth: float, min_depth: float, 
     return k * depth_map + b
 
 
-def gen_image_brightness(depth_map: np.ndarray, sidewalk_mask: np.ndarray, mode: str, min_brightness: int, max_brightness: int) -> np.ndarray:
+def gen_image_brightness(
+    depth_map: np.ndarray,
+    sidewalk_mask: np.ndarray,
+    mode: str,
+    min_brightness: int,
+    max_brightness: int,
+    *,
+    invert_values: bool = False,
+) -> np.ndarray:
     if np.count_nonzero(sidewalk_mask) == 0:
         return np.zeros((sidewalk_mask.shape[0], sidewalk_mask.shape[1], 3), dtype=np.uint8)
+    if invert_values:
+        depth_map = depth_map.max() - depth_map
     max_depth = float(depth_map[sidewalk_mask].max())
     min_depth = float(depth_map[sidewalk_mask].min())
     if mode == "exponential":
@@ -151,12 +243,14 @@ def build_depth_frames(frame_dir: Path, output_dir: Path, config: HanBaselineCon
         vmax = np.percentile(depth, config.depth_clip_percentile)
         depth = depth.copy()
         depth[depth > vmax] = vmax
+        invert_values = config.depth_source == "disparity"
         image = gen_image_brightness(
             depth,
             np.ones(depth.shape, dtype=bool),
             mode=config.depth_mode,
             min_brightness=config.depth_min_brightness,
             max_brightness=config.depth_max_brightness,
+            invert_values=invert_values,
         )
         out = depth_frame_dir / f"{depth_path.stem.replace('_disp', '')}.png"
         cv2.imwrite(str(out), image)
@@ -258,7 +352,7 @@ def build_segmentation_frames(frame_paths: list[Path], output_dir: Path, config:
         pred = pred.cpu()[0].numpy()
 
         pred_clean = pred.copy()
-        pred_clean[~np.isin(pred_clean, HAN_ADE20K_STRUCTURE_CLASSES)] = 0
+        pred_clean[~np.isin(pred_clean, config.structure_class_ids)] = 0
         pred_clean2 = morphology.remove_small_objects(pred_clean.astype(bool), min_size=config.structure_min_region_area).astype(int) * 255
         pred_clean3 = np.minimum(pred_clean, pred_clean2)
         image_edge = Image.fromarray(np.uint8(pred_clean3 * 255), "L").filter(ImageFilter.FIND_EDGES)
@@ -281,7 +375,7 @@ def build_segmentation_frames(frame_paths: list[Path], output_dir: Path, config:
         instances = predictor(image_bgr)["instances"]
         masks = np.asarray(instances.pred_masks.cpu().numpy()) if instances.has("pred_masks") else None
         classes = instances.pred_classes.cpu().numpy() if instances.has("pred_classes") else np.array([])
-        selected = [index for index, class_id in enumerate(classes) if int(class_id) in HAN_COCO_IMPORTANT_CLASSES]
+        selected = [index for index, class_id in enumerate(classes) if int(class_id) in config.important_coco_classes]
         if masks is None or not selected:
             masks_comb = edges
         else:
@@ -362,6 +456,7 @@ def run_han_baseline_on_clip(clip_path: Path, output_root: Path, config: HanBase
     write_video(combination, videos_dir / "combination.mp4", config.target_fps, is_color=False)
     return {
         "clip": str(clip_path),
+        "profile": config.profile,
         "frames": len(frames),
         "depth_frames": len(depth),
         "saliency_frames": len(saliency),
@@ -388,11 +483,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Han et al. 2021 baseline on EPIC-KITCHENS clips.")
     parser.add_argument("--clip-dir", type=Path, default=DEFAULT_CLIP_DIR)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--profile", choices=["han", "epic_indoor"], default="han")
     parser.add_argument("--target-fps", type=float, default=20.0)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     args = parser.parse_args()
-    config = HanBaselineConfig(target_fps=args.target_fps, max_frames=args.max_frames, device=args.device)
+    config = make_han_baseline_config(args.profile, target_fps=args.target_fps, max_frames=args.max_frames, device=args.device)
     summaries = run_han_baseline(args.clip_dir.resolve(), args.output_root.resolve(), config)
     for summary in summaries:
         print(summary)
