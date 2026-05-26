@@ -9,3 +9,5 @@ accelerate
 safetensors
 timm
 matplotlib
+
+deepgaze @ git+https://github.com/mpatacchiola/deepgaze.git

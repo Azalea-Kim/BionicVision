@@ -13,7 +13,7 @@ from simplification.temporal import WeightedAverageConfig, weighted_average
 
 class SmokeTests(unittest.TestCase):
     def test_import_pipeline_modules(self):
-        import pipelines.baseline  # noqa: F401
+        import pipelines.han_baseline  # noqa: F401
         import pipelines.temporal_priority  # noqa: F401
         import models.segmentation.deva  # noqa: F401
         import models.depth.cached  # noqa: F401
