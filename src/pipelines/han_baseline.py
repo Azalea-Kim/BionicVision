@@ -92,11 +92,11 @@ class HanBaselineConfig:
     target_fps: float = 20.0
     max_frames: int | None = None
     device: str = "cuda"
-    depth_mode: str = "exponential"
+    depth_mode: str = "flipped_quad"
     monodepth_model_name: str = "mono+stereo_640x192"
     depth_min_brightness: int = 0
     depth_max_brightness: int = 180
-    depth_clip_percentile: float = 80.0
+    depth_clip_percentile: float = 90.0
     saliency_bins: int = 8
     saliency_threshold_fraction: float = 0.90
     structure_class_ids: tuple[int, ...] = ADE20K_STRUCTURE_CLASSES
@@ -182,6 +182,8 @@ def gen_image_brightness(
     if mode == "exponential":
         one_channel = depth_exponential_map(depth_map, max_depth, min_depth, min_brightness, max_brightness)
     else:
+        # The Han combination notebook passes mode="flipped_quad", which falls
+        # through to the default linear mapper in depth_to_image.py.
         one_channel = depth_linear_map(depth_map, max_depth, min_depth, min_brightness, max_brightness)
     one_channel[sidewalk_mask == False] = 0
     return np.dstack([one_channel] * 3).astype(np.uint8)
