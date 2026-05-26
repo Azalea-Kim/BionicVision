@@ -1,10 +1,10 @@
 """Han et al. 2021 baseline pipeline on EPIC-KITCHENS clips.
 
 This module ports the operations in bionicvisionlab/2021-han-scene-simplification
-for local EPIC-KITCHENS 10-second clips. The ``han`` profile preserves the
-paper's original outdoor-mobility assumptions. The ``epic_indoor`` profile keeps
-the same model families and fusion rule, but updates class filters and disparity
-rendering so the baseline is meaningful on indoor egocentric kitchen footage.
+for local EPIC-KITCHENS 10-second clips. The implementation keeps Han's depth,
+saliency, segmentation, and combination mechanics intact. The only dataset
+adaptation is the class lists used to filter ADE20K scene parsing and COCO
+Detectron2 detections for indoor EPIC-KITCHENS scenes.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import math
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import cv2
 import numpy as np
@@ -31,9 +30,7 @@ PYTHON = ROOT / ".venv-models" / "bin" / "python"
 DEFAULT_CLIP_DIR = ROOT / "data" / "epic_kitchens" / "clips_10s"
 DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "han_baseline_epic10"
 
-HAN_ADE20K_STRUCTURE_CLASSES = (6, 11)
-HAN_COCO_IMPORTANT_CLASSES = (0, 1, 2, 5, 7)
-EPIC_ADE20K_STRUCTURE_CLASSES = (
+ADE20K_STRUCTURE_CLASSES = (
     0,  # wall
     3,  # floor
     5,  # ceiling
@@ -51,7 +48,7 @@ EPIC_ADE20K_STRUCTURE_CLASSES = (
     118,  # oven
     124,  # microwave
 )
-EPIC_COCO_IMPORTANT_CLASSES = (
+COCO_IMPORTANT_CLASSES = (
     0,  # person
     24,  # backpack
     26,  # handbag
@@ -92,47 +89,23 @@ EPIC_COCO_IMPORTANT_CLASSES = (
 
 @dataclass(frozen=True)
 class HanBaselineConfig:
-    profile: str = "han"
     target_fps: float = 20.0
     max_frames: int | None = None
     device: str = "cuda"
     depth_mode: str = "exponential"
-    depth_source: str = "han_disparity_as_depth"
+    monodepth_model_name: str = "mono+stereo_640x192"
     depth_min_brightness: int = 0
     depth_max_brightness: int = 180
     depth_clip_percentile: float = 80.0
     saliency_bins: int = 8
     saliency_threshold_fraction: float = 0.90
-    structure_class_ids: tuple[int, ...] = HAN_ADE20K_STRUCTURE_CLASSES
-    important_coco_classes: tuple[int, ...] = HAN_COCO_IMPORTANT_CLASSES
+    structure_class_ids: tuple[int, ...] = ADE20K_STRUCTURE_CLASSES
+    important_coco_classes: tuple[int, ...] = COCO_IMPORTANT_CLASSES
     structure_min_region_area: int = 16000
     hough_window: int = 10
     hough_min_line_length: int = 200
     hough_max_line_gap: int = 1
     detectron_score_threshold: float = 0.5
-
-
-def make_han_baseline_config(
-    profile: str,
-    *,
-    target_fps: float,
-    max_frames: int | None,
-    device: str,
-) -> HanBaselineConfig:
-    if profile == "han":
-        return HanBaselineConfig(target_fps=target_fps, max_frames=max_frames, device=device)
-    if profile == "epic_indoor":
-        return HanBaselineConfig(
-            profile=profile,
-            target_fps=target_fps,
-            max_frames=max_frames,
-            device=device,
-            depth_source="disparity",
-            structure_class_ids=EPIC_ADE20K_STRUCTURE_CLASSES,
-            important_coco_classes=EPIC_COCO_IMPORTANT_CLASSES,
-            hough_min_line_length=80,
-        )
-    raise ValueError(f"Unknown Han baseline profile: {profile}")
 
 
 def ensure_cuda_if_requested(device: str) -> torch.device:
@@ -201,13 +174,9 @@ def gen_image_brightness(
     mode: str,
     min_brightness: int,
     max_brightness: int,
-    *,
-    invert_values: bool = False,
 ) -> np.ndarray:
     if np.count_nonzero(sidewalk_mask) == 0:
         return np.zeros((sidewalk_mask.shape[0], sidewalk_mask.shape[1], 3), dtype=np.uint8)
-    if invert_values:
-        depth_map = depth_map.max() - depth_map
     max_depth = float(depth_map[sidewalk_mask].max())
     min_depth = float(depth_map[sidewalk_mask].min())
     if mode == "exponential":
@@ -227,7 +196,17 @@ def build_depth_frames(frame_dir: Path, output_dir: Path, config: HanBaselineCon
     for frame in sorted(frame_dir.glob("*.jpg")):
         shutil.copy2(frame, work_dir / frame.name)
 
-    command = [str(PYTHON), "test_simple.py", "--image_path", str(work_dir), "--model_name", "mono_640x192", "--ext", "jpg"]
+    command = [
+        str(PYTHON),
+        "test_simple.py",
+        "--image_path",
+        str(work_dir),
+        "--model_name",
+        config.monodepth_model_name,
+        "--ext",
+        "jpg",
+        "--pred_metric_depth",
+    ]
     if config.device == "cpu":
         command.append("--no_cuda")
     subprocess.run(command, cwd=monodepth_root, check=True)
@@ -238,21 +217,19 @@ def build_depth_frames(frame_dir: Path, output_dir: Path, config: HanBaselineCon
     depth_frame_dir.mkdir(parents=True, exist_ok=True)
 
     output_paths: list[Path] = []
-    for depth_path in sorted(work_dir.glob("*_disp.npy")):
+    for depth_path in sorted(work_dir.glob("*_depth.npy")):
         depth = np.squeeze(np.load(depth_path)).astype(np.float32)
         vmax = np.percentile(depth, config.depth_clip_percentile)
         depth = depth.copy()
         depth[depth > vmax] = vmax
-        invert_values = config.depth_source == "disparity"
         image = gen_image_brightness(
             depth,
             np.ones(depth.shape, dtype=bool),
             mode=config.depth_mode,
             min_brightness=config.depth_min_brightness,
             max_brightness=config.depth_max_brightness,
-            invert_values=invert_values,
         )
-        out = depth_frame_dir / f"{depth_path.stem.replace('_disp', '')}.png"
+        out = depth_frame_dir / f"{depth_path.stem.removesuffix('_depth')}.png"
         cv2.imwrite(str(out), image)
         output_paths.append(out)
     return output_paths
@@ -456,7 +433,6 @@ def run_han_baseline_on_clip(clip_path: Path, output_root: Path, config: HanBase
     write_video(combination, videos_dir / "combination.mp4", config.target_fps, is_color=False)
     return {
         "clip": str(clip_path),
-        "profile": config.profile,
         "frames": len(frames),
         "depth_frames": len(depth),
         "saliency_frames": len(saliency),
@@ -483,12 +459,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Han et al. 2021 baseline on EPIC-KITCHENS clips.")
     parser.add_argument("--clip-dir", type=Path, default=DEFAULT_CLIP_DIR)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--profile", choices=["han", "epic_indoor"], default="han")
     parser.add_argument("--target-fps", type=float, default=20.0)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     args = parser.parse_args()
-    config = make_han_baseline_config(args.profile, target_fps=args.target_fps, max_frames=args.max_frames, device=args.device)
+    config = HanBaselineConfig(target_fps=args.target_fps, max_frames=args.max_frames, device=args.device)
     summaries = run_han_baseline(args.clip_dir.resolve(), args.output_root.resolve(), config)
     for summary in summaries:
         print(summary)
