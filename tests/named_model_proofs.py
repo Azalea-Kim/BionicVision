@@ -290,6 +290,9 @@ def run_monodepth2(input_dir: Path, output_root: Path, device: torch.device) -> 
     dest.mkdir(parents=True, exist_ok=True)
     for depth_path in sorted(work_input_dir.glob("*_depth.npy")):
         depth = np.squeeze(np.load(depth_path)).astype(np.float32)
+        vmax = np.percentile(depth, 90)
+        depth = depth.copy()
+        depth[depth > vmax] = vmax
         depth_vis = (normalize01(depth) * 255).astype(np.uint8)
         color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_INFERNO)
         output_name = f"{depth_path.stem.removesuffix('_depth')}.png"
