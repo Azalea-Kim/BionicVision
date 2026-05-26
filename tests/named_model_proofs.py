@@ -40,7 +40,7 @@ MODEL_OUTPUT_DIRS = {
     "deepgaze_iii": ("saliency/deepgaze_iii", "*.png"),
     "detectron2": ("segmentation/detectron2", "*.png"),
     "mit_scene_parsing": ("segmentation/mit_scene_parsing", "*.png"),
-    "monodepth2": ("depth/monodepth2", "*.jpeg"),
+    "monodepth2": ("depth/monodepth2", "*.png"),
     "tc_monodepth": ("depth/tc_monodepth", "*.png"),
     "deva_annotations": ("segmentation/deva/Annotations", "*.png"),
     "deva_visualizations": ("segmentation/deva/Visualizations", "*.jpg"),
@@ -278,17 +278,22 @@ def run_monodepth2(input_dir: Path, output_root: Path, device: torch.device) -> 
         "--image_path",
         str(work_input_dir),
         "--model_name",
-        "mono_640x192",
+        "mono+stereo_640x192",
         "--ext",
         "jpg",
+        "--pred_metric_depth",
     ]
     if device.type == "cpu":
         command.append("--no_cuda")
     subprocess.run(command, cwd=monodepth_root, check=True)
     dest = output_root / "depth" / "monodepth2"
     dest.mkdir(parents=True, exist_ok=True)
-    for image in sorted(work_input_dir.glob("*_disp.jpeg")):
-        shutil.copy2(image, dest / image.name)
+    for depth_path in sorted(work_input_dir.glob("*_depth.npy")):
+        depth = np.squeeze(np.load(depth_path)).astype(np.float32)
+        depth_vis = (normalize01(depth) * 255).astype(np.uint8)
+        color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_INFERNO)
+        output_name = f"{depth_path.stem.removesuffix('_depth')}.png"
+        cv2.imwrite(str(dest / output_name), color)
 
 
 def run_tc_monodepth(frames: list[Path], output_root: Path, device: torch.device) -> None:
