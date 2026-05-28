@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import cv2
 
 from datasets.frames import list_frames, load_gray
 
@@ -15,7 +16,12 @@ def load_mask(path: str | Path) -> np.ndarray:
     mask_path = Path(path)
     if mask_path.suffix.lower() == ".npy":
         return np.load(mask_path)
-    return load_gray(mask_path)
+    image = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise FileNotFoundError(f"Could not load image: {mask_path}")
+    if image.ndim == 3:
+        return load_gray(mask_path)
+    return image
 
 
 def load_mask_sequence(folder: str | Path) -> list[np.ndarray]:
@@ -24,4 +30,3 @@ def load_mask_sequence(folder: str | Path) -> list[np.ndarray]:
     root = Path(folder)
     paths = sorted(root.glob("*.npy")) or list_frames(root)
     return [load_mask(path) for path in paths]
-

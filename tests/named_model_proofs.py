@@ -2,7 +2,8 @@
 
 This runner intentionally uses the actual model packages/sources checked out
 under external/model_sources and installed in .venv-models. It does not call
-legacy code or substitute another model family when a requested model fails.
+older in-repo implementations or substitute another model family when a
+requested model fails.
 """
 
 from __future__ import annotations

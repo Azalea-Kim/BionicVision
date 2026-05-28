@@ -403,20 +403,55 @@ def combine_frames(saliency_paths: list[Path], segmentation_paths: list[Path], d
 
 
 def write_video(frame_paths: list[Path], output_path: Path, fps: float, is_color: bool = True) -> None:
-    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_COLOR if is_color else cv2.IMREAD_GRAYSCALE)
-    if first is None:
-        raise FileNotFoundError(frame_paths[0])
-    size = (first.shape[1], first.shape[0])
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size, isColor=is_color)
-    for path in frame_paths:
-        frame = cv2.imread(str(path), cv2.IMREAD_COLOR if is_color else cv2.IMREAD_GRAYSCALE)
-        if frame is None:
-            raise FileNotFoundError(path)
-        if is_color and frame.ndim == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        writer.write(frame)
-    writer.release()
+    first = _load_video_frame(frame_paths[0], is_color=is_color)
+    height, width = first.shape[:2]
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-an",
+        "-vcodec",
+        "libx264",
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE)
+    assert process.stdin is not None
+    try:
+        process.stdin.write(first.tobytes())
+        for path in frame_paths[1:]:
+            frame = _load_video_frame(path, is_color=is_color)
+            if frame.shape[:2] != (height, width):
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+            process.stdin.write(frame.tobytes())
+    finally:
+        process.stdin.close()
+    if process.wait() != 0:
+        raise RuntimeError(f"ffmpeg failed while writing {output_path}")
+
+
+def _load_video_frame(path: Path, *, is_color: bool) -> np.ndarray:
+    frame = cv2.imread(str(path), cv2.IMREAD_COLOR if is_color else cv2.IMREAD_GRAYSCALE)
+    if frame is None:
+        raise FileNotFoundError(path)
+    if frame.ndim == 2:
+        return np.stack([frame, frame, frame], axis=-1)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
 def run_han_baseline_on_clip(clip_path: Path, output_root: Path, config: HanBaselineConfig) -> dict[str, str | int]:

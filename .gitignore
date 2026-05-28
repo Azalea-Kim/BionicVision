@@ -1,5 +1,7 @@
 .idea/
 data/
+data_unused*/
+data_unused_latest
 external/
 outputs/
 *.mp4

@@ -39,13 +39,16 @@ def baseline_fusion(
     saliency: np.ndarray,
     depth: np.ndarray,
     *,
-    saliency_keep_fraction: float = 0.10,
+    saliency_threshold_fraction: float = 0.90,
 ) -> np.ndarray:
     """Han-style fusion: OR segmentation with thresholded saliency, then depth-weight."""
 
-    saliency_mask = threshold_saliency(saliency, keep_fraction=saliency_keep_fraction)
+    threshold = float(np.max(saliency)) * saliency_threshold_fraction
+    saliency_mask = np.asarray(saliency).copy()
+    saliency_mask[saliency_mask <= threshold] = 0
+    saliency_mask[saliency_mask > 0] = 255
+    saliency_mask = saliency_mask.astype(np.uint8)
     if saliency_mask.shape[:2] != segmentation.shape[:2]:
         saliency_mask = resize_like(saliency_mask, segmentation)
     combined = np.maximum(segmentation.astype(np.uint8), saliency_mask)
     return depth_weighted_mask(combined, depth)
-
