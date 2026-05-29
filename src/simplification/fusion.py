@@ -8,16 +8,6 @@ import numpy as np
 from .masks import resize_like
 
 
-def threshold_saliency(saliency: np.ndarray, *, keep_fraction: float = 0.05) -> np.ndarray:
-    """Keep the strongest saliency pixels as a binary mask."""
-
-    if not 0 < keep_fraction <= 1:
-        raise ValueError("keep_fraction must be in (0, 1].")
-    saliency_float = np.asarray(saliency, dtype=np.float32)
-    threshold = float(np.quantile(saliency_float, 1.0 - keep_fraction))
-    return np.where(saliency_float >= threshold, 255, 0).astype(np.uint8)
-
-
 def depth_weighted_mask(mask: np.ndarray, depth: np.ndarray) -> np.ndarray:
     """Use normalized depth as brightness within an active mask."""
 

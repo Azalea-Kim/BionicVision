@@ -1,4 +1,4 @@
-"""Run DEVA from EPIC/VISOR class-labeled manual masks."""
+"""Run DEVA with fixed text-prompted class groups."""
 
 from __future__ import annotations
 
@@ -9,49 +9,15 @@ import json
 from pathlib import Path
 import shutil
 import sys
-import zlib
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from datasets.epic_kitchens.annotations import (
-    EpicFrame,
-    VisorObject,
-    build_clip_tiers,
-    is_hand,
-    load_visor_annotations,
-    object_id,
-    rasterize_object,
-)
-from simplification.masks import resize_like
 
-from .run_automatic import DEVA_ROOT, cpu_cuda_shim
-
-
-SCENE_LABELS = {
-    "cabinet",
-    "ceiling",
-    "counter",
-    "counter top",
-    "countertop",
-    "cupboard",
-    "door",
-    "drawer",
-    "floor",
-    "fridge",
-    "hob",
-    "microwave",
-    "oven",
-    "refrigerator",
-    "shelf",
-    "sink",
-    "stove",
-    "table",
-    "wall",
-    "window",
-}
+ROOT = Path(__file__).resolve().parents[4]
+DEVA_ROOT = ROOT / "external" / "model_sources" / "segmentation" / "Tracking-Anything-with-DEVA"
 
 GROUP_COLORS_RGB = {
     "arms": (255, 0, 0),
@@ -59,10 +25,86 @@ GROUP_COLORS_RGB = {
     "scenes": (0, 0, 255),
 }
 
+ARM_PROMPTS = (
+    "hand",
+    "left hand",
+    "right hand",
+    "arm",
+    "forearm",
+)
+
+OBJECT_PROMPTS = (
+    "backpack",
+    "handbag",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "dining table",
+    "tv",
+    "laptop",
+    "remote",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "vase",
+    "scissors",
+    "toothbrush",
+)
+
+SCENE_PROMPTS = (
+    "wall",
+    "floor",
+    "ceiling",
+    "window",
+    "cabinet",
+    "door",
+    "table",
+    "shelf",
+    "counter",
+    "countertop",
+    "stove",
+    "microwave",
+    "oven",
+    "refrigerator",
+    "sink",
+)
+
+
+@dataclass(frozen=True)
+class PromptGroup:
+    name: str
+    prompts: tuple[str, ...]
+
+
+DEFAULT_PROMPT_GROUPS = (
+    PromptGroup("arms", ARM_PROMPTS),
+    PromptGroup("objects", OBJECT_PROMPTS),
+    PromptGroup("scenes", SCENE_PROMPTS),
+)
+
 
 @dataclass(frozen=True)
 class ManualDevaOutputs:
-    """Paths written by manual class-guided DEVA."""
+    """Paths written by fixed-prompt DEVA."""
 
     raw_annotation_dir: Path
     raw_visualization_dir: Path
@@ -70,21 +112,60 @@ class ManualDevaOutputs:
     pred_json_path: Path
 
 
+@contextlib.contextmanager
+def cpu_cuda_shim():
+    """Let DEVA's CUDA-oriented loader run on CPU when CUDA is unavailable."""
+
+    original_tensor_cuda = torch.Tensor.cuda
+    original_module_cuda = torch.nn.Module.cuda
+    torch.Tensor.cuda = lambda self, *args, **kwargs: self
+    torch.nn.Module.cuda = lambda self, *args, **kwargs: self
+    try:
+        yield
+    finally:
+        torch.Tensor.cuda = original_tensor_cuda
+        torch.nn.Module.cuda = original_module_cuda
+
+
+@contextlib.contextmanager
+def groundingdino_python_attention_fallback():
+    """Use GroundingDINO's PyTorch attention path when compiled ops are absent."""
+
+    try:
+        from groundingdino.models.GroundingDINO import ms_deform_attn
+    except ImportError:
+        yield
+        return
+
+    if hasattr(ms_deform_attn, "_C"):
+        yield
+        return
+
+    original_cuda_available = torch.cuda.is_available
+    torch.cuda.is_available = lambda: False
+    try:
+        yield
+    finally:
+        torch.cuda.is_available = original_cuda_available
+
+
 def run_deva_manual(
     *,
     frames_dir: Path,
-    visor_annotation_path: Path,
     output_dir: Path,
-    sampled_source_indices: list[int],
+    prompt_groups: tuple[PromptGroup, ...] = DEFAULT_PROMPT_GROUPS,
     size: int = 360,
     detection_every: int = 1,
     memory_reset_interval: int = 4,
+    dino_threshold: float = 0.35,
+    dino_nms_threshold: float = 0.8,
+    sam_variant: str = "original",
 ) -> ManualDevaOutputs:
-    """Run DEVA with class-labeled VISOR masks as manual detections.
+    """Run text-prompted DEVA with fixed class groups.
 
-    This is the prompted/manual variant used by combination1: each sampled frame
-    supplies all VISOR classes present in that frame. DEVA tracks those labeled
-    regions, and we save a semantic three-color render of arms/objects/scenes.
+    This is the only DEVA mode used by pipelines. It uses GroundingDINO + SAM
+    detections for fixed prompts and DEVA for propagation; it does not use
+    automatic SAM grid prompting or VISOR ground-truth masks.
     """
 
     if output_dir.exists():
@@ -97,23 +178,11 @@ def run_deva_manual(
     from deva.inference.demo_utils import get_input_frame_for_deva
     from deva.inference.eval_args import add_common_eval_args, get_model_and_config
     from deva.inference.inference_core import DEVAInferenceCore
-    from deva.inference.object_info import ObjectInfo
-    from deva.ext.ext_eval_args import add_text_default_args
+    from deva.ext.ext_eval_args import add_ext_eval_args, add_text_default_args
+    from deva.ext.grounding_dino import get_grounding_dino_model
+    from deva.ext.with_text_processor import make_segmentation_with_text
 
-    frames = merge_duplicate_frames(load_visor_annotations(visor_annotation_path))
-    frames_by_index = {frame.frame_index: frame for frame in frames}
-    tiers_by_index = {tier.frame.frame_index: tier for tier in build_clip_tiers(frames)}
-    prompts = class_prompts_for_indices(frames_by_index, sampled_source_indices)
-    category_by_label = {label: index for index, label in enumerate(prompts)}
-    group_by_object_id = {
-        stable_deva_object_id(frame.video_id, object_id(annotation), normalized_prompt(annotation.name)): label_group(annotation, tier)
-        for source_index in sampled_source_indices
-        for frame in [frames_by_index.get(source_index)]
-        for tier in [tiers_by_index.get(source_index)]
-        if frame is not None
-        for annotation in frame.annotations
-    }
-
+    prompts, group_by_category_id = flatten_prompt_groups(prompt_groups)
     argv = [
         "deva-manual",
         "--model",
@@ -128,20 +197,37 @@ def run_deva_manual(
         "online",
         "--detection_every",
         str(detection_every),
+        "--prompt",
+        ".".join(prompts),
+        "--GROUNDING_DINO_CONFIG_PATH",
+        str(DEVA_ROOT / "saves" / "GroundingDINO_SwinT_OGC.py"),
+        "--GROUNDING_DINO_CHECKPOINT_PATH",
+        str(DEVA_ROOT / "saves" / "groundingdino_swint_ogc.pth"),
+        "--SAM_CHECKPOINT_PATH",
+        str(DEVA_ROOT / "saves" / "sam_vit_h_4b8939.pth"),
+        "--DINO_THRESHOLD",
+        str(dino_threshold),
+        "--DINO_NMS_THRESHOLD",
+        str(dino_nms_threshold),
+        "--sam_variant",
+        sam_variant,
     ]
     parser = argparse.ArgumentParser()
     add_common_eval_args(parser)
+    add_ext_eval_args(parser)
     add_text_default_args(parser)
 
     old_argv = sys.argv
     sys.argv = argv
     use_cuda = torch.cuda.is_available()
     device_context = contextlib.nullcontext() if use_cuda else cpu_cuda_shim()
+    detection_device = "cuda" if use_cuda else "cpu"
     try:
         with device_context:
             deva_model, cfg, args = get_model_and_config(parser)
             cfg["temporal_setting"] = args.temporal_setting.lower()
             cfg["prompt"] = ".".join(prompts)
+            gd_model, sam_model = get_grounding_dino_model(cfg, detection_device)
             video_reader = SimpleVideoReader(cfg["img_path"])
             loader = DataLoader(video_reader, batch_size=None, collate_fn=no_collate, num_workers=0)
             video_length = len(loader)
@@ -167,51 +253,49 @@ def run_deva_manual(
             visualization_dir.mkdir(parents=True, exist_ok=True)
             frame_records = []
 
-            for ti, (frame_rgb, image_path) in enumerate(loader):
-                if memory_reset_interval > 0 and ti > 0 and ti % memory_reset_interval == 0:
-                    del deva
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    deva = new_deva_core()
-                source_index = sampled_source_indices[ti]
-                frame_record = frames_by_index.get(source_index)
-                tier = tiers_by_index.get(source_index)
-                height, width = frame_rgb.shape[:2]
-                image = get_input_frame_for_deva(frame_rgb, cfg["size"])
-                manual_mask, segments = manual_detection_for_frame(
-                    frame_record,
-                    tier,
-                    shape=(height, width),
-                    resized_shape=image.shape[1:],
-                    category_by_label=category_by_label,
-                    object_info_cls=ObjectInfo,
-                )
-                if ti % detection_every == 0 or not deva.memory.engaged:
-                    prob = deva.incorporate_detection(image, manual_mask, segments)
-                else:
-                    prob = deva.step(image, None, None)
-                grouped = group_probability_mask(
-                    prob,
-                    deva.object_manager.tmp_id_to_obj,
-                    group_by_object_id,
-                    shape=(height, width),
-                    need_resize=cfg["size"] > 0,
-                )
-                annotation_rgb = semantic_annotation_rgb(grouped)
-                visualization_rgb = semantic_visualization_rgb(frame_rgb, annotation_rgb)
-                name = Path(image_path).name
-                cv2.imwrite(str(annotation_dir / f"{Path(name).stem}.png"), cv2.cvtColor(annotation_rgb, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(str(visualization_dir / f"{Path(name).stem}.png"), cv2.cvtColor(visualization_rgb, cv2.COLOR_RGB2BGR))
-                frame_records.append(
-                    {
-                        "frame": name,
-                        "source_frame": source_index,
-                        "semantic_counts": {
-                            group_name: int(np.count_nonzero(mask))
-                            for group_name, mask in grouped.items()
-                        },
-                    }
-                )
+            attention_context = groundingdino_python_attention_fallback() if use_cuda else contextlib.nullcontext()
+            with attention_context:
+                for ti, (frame_rgb, image_path) in enumerate(loader):
+                    if memory_reset_interval > 0 and ti > 0 and ti % memory_reset_interval == 0:
+                        del deva
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        deva = new_deva_core()
+                    height, width = frame_rgb.shape[:2]
+                    image = get_input_frame_for_deva(frame_rgb, cfg["size"])
+                    if ti % detection_every == 0 or not deva.memory.engaged:
+                        mask, segments_info = make_segmentation_with_text(
+                            cfg,
+                            frame_rgb,
+                            gd_model,
+                            sam_model,
+                            prompts,
+                            cfg["size"],
+                        )
+                        prob = deva.incorporate_detection(image, mask, segments_info)
+                    else:
+                        prob = deva.step(image, None, None)
+                    grouped = group_probability_mask(
+                        prob,
+                        deva.object_manager.tmp_id_to_obj,
+                        group_by_category_id,
+                        shape=(height, width),
+                        need_resize=cfg["size"] > 0,
+                    )
+                    annotation_rgb = semantic_annotation_rgb(grouped)
+                    visualization_rgb = semantic_visualization_rgb(frame_rgb, annotation_rgb)
+                    name = Path(image_path).name
+                    cv2.imwrite(str(annotation_dir / f"{Path(name).stem}.png"), cv2.cvtColor(annotation_rgb, cv2.COLOR_RGB2BGR))
+                    cv2.imwrite(str(visualization_dir / f"{Path(name).stem}.png"), cv2.cvtColor(visualization_rgb, cv2.COLOR_RGB2BGR))
+                    frame_records.append(
+                        {
+                            "frame": name,
+                            "semantic_counts": {
+                                group_name: int(np.count_nonzero(mask))
+                                for group_name, mask in grouped.items()
+                            },
+                        }
+                    )
     finally:
         sys.argv = old_argv
 
@@ -219,6 +303,10 @@ def run_deva_manual(
     prompts_path.write_text(
         json.dumps(
             {
+                "prompt_groups": {
+                    group.name: list(group.prompts)
+                    for group in prompt_groups
+                },
                 "prompts": prompts,
                 "semantic_colors_rgb": GROUP_COLORS_RGB,
             },
@@ -239,54 +327,33 @@ def run_deva_manual(
     )
 
 
-def manual_detection_for_frame(
-    frame: EpicFrame | None,
-    tier,
-    *,
-    shape: tuple[int, int],
-    resized_shape: tuple[int, int],
-    category_by_label: dict[str, int],
-    object_info_cls,
-) -> tuple[torch.Tensor, list]:
-    """Build one DEVA detection mask and segment metadata from VISOR."""
+def flatten_prompt_groups(prompt_groups: tuple[PromptGroup, ...]) -> tuple[list[str], dict[int, str]]:
+    prompts = []
+    group_by_category_id = {}
+    seen = set()
+    for group in prompt_groups:
+        if group.name not in GROUP_COLORS_RGB:
+            raise ValueError(f"Unknown DEVA prompt group: {group.name}")
+        for prompt in group.prompts:
+            normalized = normalize_prompt(prompt)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            group_by_category_id[len(prompts)] = group.name
+            prompts.append(normalized)
+    if not prompts:
+        raise ValueError("DEVA prompt groups must contain at least one prompt.")
+    return prompts, group_by_category_id
 
-    detection = np.zeros(shape, dtype=np.int64)
-    segments = []
-    if frame is not None:
-        for annotation in frame.annotations:
-            label = normalized_prompt(annotation.name)
-            category_id = category_by_label[label]
-            mask = rasterize_object(annotation, shape)
-            if mask.shape[:2] != shape:
-                mask = resize_like(mask, np.zeros(shape, dtype=np.uint8))
-            stable_id = stable_deva_object_id(frame.video_id, object_id(annotation), label)
-            detection[mask > 0] = stable_id
-            group = label_group(annotation, tier)
-            segments.append(
-                object_info_cls(
-                    id=stable_id,
-                    category_id=category_id,
-                    isthing=group != "scenes",
-                    score=1.0,
-                )
-            )
 
-    if resized_shape != shape:
-        detection = cv2.resize(
-            detection.astype(np.float32),
-            (resized_shape[1], resized_shape[0]),
-            interpolation=cv2.INTER_NEAREST,
-        ).astype(np.int64)
-    tensor = torch.from_numpy(detection)
-    if torch.cuda.is_available():
-        tensor = tensor.cuda()
-    return tensor, segments
+def normalize_prompt(label: str) -> str:
+    return " ".join(str(label).lower().strip().replace("_", " ").replace("-", " ").split())
 
 
 def group_probability_mask(
     prob: torch.Tensor,
     tmp_id_to_obj: dict[int, object],
-    group_by_object_id: dict[int, str],
+    group_by_category_id: dict[int, str],
     *,
     shape: tuple[int, int],
     need_resize: bool,
@@ -296,9 +363,15 @@ def group_probability_mask(
     if need_resize:
         prob = F.interpolate(prob.unsqueeze(1), shape, mode="bilinear", align_corners=False)[:, 0]
     tmp_mask = torch.argmax(prob, dim=0).detach().cpu().numpy()
-    grouped = {name: np.zeros(shape, dtype=np.uint8) for name in ("arms", "objects", "scenes")}
+    grouped = {name: np.zeros(shape, dtype=np.uint8) for name in GROUP_COLORS_RGB}
     for tmp_id, obj in tmp_id_to_obj.items():
-        group = group_by_object_id.get(obj.id)
+        if hasattr(obj, "vote_category_id"):
+            category_id = obj.vote_category_id()
+        else:
+            category_id = getattr(obj, "category_id", None)
+        if category_id is None:
+            continue
+        group = group_by_category_id.get(int(category_id))
         if group is None:
             continue
         grouped[group][tmp_mask == tmp_id] = 255
@@ -332,76 +405,3 @@ def semantic_visualization_rgb(frame_rgb: np.ndarray, annotation_rgb: np.ndarray
     output = frame.copy()
     output[active] = np.clip(0.35 * frame[active] + 0.65 * annotation_rgb[active], 0, 255).astype(np.uint8)
     return output
-
-
-def class_prompts_for_indices(frames_by_index: dict[int, EpicFrame], indices: list[int]) -> list[str]:
-    labels = []
-    seen = set()
-    for index in indices:
-        frame = frames_by_index.get(index)
-        if frame is None:
-            continue
-        for annotation in frame.annotations:
-            label = normalized_prompt(annotation.name)
-            if label in seen:
-                continue
-            seen.add(label)
-            labels.append(label)
-    return labels
-
-
-def label_group(annotation: VisorObject, tier) -> str:
-    if is_hand(annotation):
-        return "arms"
-    oid = object_id(annotation)
-    if tier is not None and oid in tier.foreground_ids:
-        return "objects"
-    label = normalized_prompt(annotation.name)
-    if label in SCENE_LABELS:
-        return "scenes"
-    return "objects"
-
-
-def normalized_prompt(label: str) -> str:
-    return " ".join(str(label).lower().strip().replace("_", " ").replace("-", " ").split())
-
-
-def stable_deva_object_id(video_id: str, oid: str, label: str) -> int:
-    raw = f"{video_id}:{oid}:{label}".encode("utf-8")
-    return 256 + (zlib.crc32(raw) % (256**3 - 256))
-
-
-def merge_duplicate_frames(frames: list[EpicFrame]) -> list[EpicFrame]:
-    by_index: dict[int, list[EpicFrame]] = {}
-    for frame in frames:
-        by_index.setdefault(frame.frame_index, []).append(frame)
-
-    merged = []
-    for frame_index in sorted(by_index):
-        group = by_index[frame_index]
-        first = group[0]
-        annotations = []
-        seen = set()
-        for frame in group:
-            for annotation in frame.annotations:
-                key = (
-                    annotation.track_id,
-                    annotation.name,
-                    annotation.relation,
-                    repr(annotation.segments),
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                annotations.append(annotation)
-        merged.append(
-            EpicFrame(
-                video_id=first.video_id,
-                frame_name=first.frame_name,
-                frame_index=frame_index,
-                image_path=first.image_path,
-                annotations=tuple(annotations),
-                annotation_size=first.annotation_size,
-            )
-        )
-    return merged

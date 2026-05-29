@@ -28,7 +28,7 @@ sudo apt-get install -y \
 
 ## Python Environment
 
-Create the project venv at the repo root. The scripts expect `.venv-models`.
+Create the project venv at the repo root. The commands expect `.venv-models`.
 
 ```bash
 python3.10 -m venv .venv-models
@@ -130,10 +130,18 @@ wget -O external/model_sources/segmentation/Tracking-Anything-with-DEVA/saves/DE
   https://github.com/hkchengrex/Tracking-Anything-with-DEVA/releases/download/v1.0/DEVA-propagation.pth
 ```
 
-`combination1` uses manual VISOR-guided DEVA and does not require SAM. SAM is
-only needed if you run automatic DEVA experiments:
+`combination1` uses fixed-prompt manual DEVA with GroundingDINO + SAM. It does
+not use automatic SAM grid prompting and does not use VISOR masks at inference
+time.
 
 ```bash
+CUDA_VISIBLE_DEVICES="" python -m pip install --no-build-isolation \
+  "groundingdino @ git+https://github.com/IDEA-Research/GroundingDINO.git"
+
+wget -O external/model_sources/segmentation/Tracking-Anything-with-DEVA/saves/GroundingDINO_SwinT_OGC.py \
+  https://github.com/hkchengrex/Tracking-Anything-with-DEVA/releases/download/v1.0/GroundingDINO_SwinT_OGC.py
+wget -O external/model_sources/segmentation/Tracking-Anything-with-DEVA/saves/groundingdino_swint_ogc.pth \
+  https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
 wget -O external/model_sources/segmentation/Tracking-Anything-with-DEVA/saves/sam_vit_h_4b8939.pth \
   https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
 ```
@@ -228,10 +236,9 @@ PYTHONPATH=src python -m pipelines.han_baseline \
 Combination1 smoke:
 
 ```bash
-PYTHONPATH=src python scripts/run_combination1.py \
+PYTHONPATH=src python -m pipelines.combination1 \
   --clip-dir data/epic_kitchens/video_snippets/first_10s \
   --output-root outputs/combination1_smoke \
-  --data-root data/epic_kitchens \
   --target-fps 20 \
   --max-frames 3 \
   --device cuda \
@@ -266,7 +273,7 @@ PYTHONPATH=src python -m pipelines.han_baseline \
   --target-fps 20 \
   --device cuda
 
-PYTHONPATH=src python scripts/evaluate_han_baseline.py \
+PYTHONPATH=src python -m evaluation.pipeline_outputs \
   --data-root data/epic_kitchens \
   --output-root outputs/han_baseline_data_first10 \
   --results-dir outputs/evaluation/han_baseline_data_first10
@@ -275,25 +282,24 @@ PYTHONPATH=src python scripts/evaluate_han_baseline.py \
 Then run `combination1`:
 
 ```bash
-PYTHONPATH=src python scripts/run_combination1.py \
+PYTHONPATH=src python -m pipelines.combination1 \
   --clip-dir data/epic_kitchens/video_snippets/first_10s \
   --output-root outputs/combination1_epic10 \
-  --data-root data/epic_kitchens \
   --target-fps 20 \
   --device cuda \
   --deva-detection-every 1 \
   --deva-memory-reset-interval 4 \
   --deva-size 360
 
-PYTHONPATH=src python scripts/evaluate_han_baseline.py \
+PYTHONPATH=src python -m evaluation.pipeline_outputs \
   --data-root data/epic_kitchens \
   --output-root outputs/combination1_epic10 \
   --results-dir outputs/evaluation/combination1_epic10
 ```
 
-`scripts/evaluate_han_baseline.py` is currently the shared evaluator for both
-the baseline and `combination1` because both produce the same output directory
-contract: `frames/`, `combination_frames/`, and videos.
+`evaluation.pipeline_outputs` is the shared evaluator for any pipeline that
+produces the same output directory contract: `frames/`,
+`combination_frames/`, and videos.
 
 ## Expected Output Layout
 

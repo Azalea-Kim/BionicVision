@@ -35,7 +35,7 @@ setup_logger()
 
 import json,random
 
-sys.path.append(os.path.join(project_root, "src", "models", "segmentation", "detectron2_baseline"))
+sys.path.append(os.path.join(project_root, "src", "models", "segmentation", "detectron2"))
 
 # Import detectron2 utilities
 from detectron2 import model_zoo

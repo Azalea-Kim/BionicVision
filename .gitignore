@@ -5,7 +5,9 @@ data_unused_latest
 external/
 outputs/
 *.mp4
+__pycache__/
 *.pyc
+*.pyo
 .venv/
 .venv-models
 .venv-models/

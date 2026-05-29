@@ -32,7 +32,7 @@ setup_logger()
 
 import json, random
 
-sys.path.append(os.path.join(project_root, "src", "models", "segmentation", "detectron2_baseline"))
+sys.path.append(os.path.join(project_root, "src", "models", "segmentation", "detectron2"))
 
 # Import detectron2 utilities
 from detectron2 import model_zoo
@@ -460,5 +460,4 @@ for count in np.arange(1, len(all_frames) + 1):  # each frame !!modified +1
     imageio.imwrite(seg_filename, masks_comb)
 
     plt.show()
-
 

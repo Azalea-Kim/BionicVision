@@ -11,9 +11,10 @@ import cv2
 import numpy as np
 
 from models.base import ModelSpec
+from models.depth.cached import normalize_depth
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 TC_MONODEPTH_ROOT = ROOT / "external" / "model_sources" / "depth" / "TCMonoDepth"
 DEFAULT_CHECKPOINT = TC_MONODEPTH_ROOT / "weights" / "_ckpt_small.pt.tar"
 
@@ -92,20 +93,6 @@ class TCMonoDepthEstimator:
             )
         depth = prediction.squeeze().detach().cpu().numpy().astype(np.float32)
         return normalize_depth(depth)
-
-
-def normalize_depth(depth: np.ndarray) -> np.ndarray:
-    """Normalize finite depth/disparity values into `[0, 1]`."""
-
-    values = np.asarray(depth, dtype=np.float32)
-    finite = np.isfinite(values)
-    if not finite.any():
-        return np.zeros(values.shape, dtype=np.float32)
-    lo = float(values[finite].min())
-    hi = float(values[finite].max())
-    if hi <= lo:
-        return np.zeros(values.shape, dtype=np.float32)
-    return np.clip((values - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
 
 
 def predict_image(image_path: str | Path, *, device: str = "cuda") -> np.ndarray:

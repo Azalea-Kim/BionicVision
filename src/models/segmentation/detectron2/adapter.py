@@ -18,7 +18,7 @@ DETECTRON2_SPEC = ModelSpec(
 )
 
 
-def build_predictor(score_threshold: float = 0.5):
+def build_predictor(*, device: str = "cuda", score_threshold: float = 0.5):
     """Create a Detectron2 predictor lazily."""
 
     import detectron2  # noqa: F401
@@ -30,15 +30,38 @@ def build_predictor(score_threshold: float = 0.5):
     setup_logger()
     cfg = get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
+    cfg.MODEL.DEVICE = device
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_threshold
     cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
     return DefaultPredictor(cfg)
+
+
+def predict_important_mask_from_image(
+    image_bgr: np.ndarray,
+    predictor,
+    *,
+    important_classes: tuple[int, ...] = DEFAULT_IMPORTANT_CLASSES,
+) -> np.ndarray:
+    """Predict a combined mask for selected COCO class IDs from a BGR image."""
+
+    instances = predictor(image_bgr)["instances"]
+    if not instances.has("pred_classes") or not instances.has("pred_masks"):
+        return np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+
+    classes = instances.pred_classes.cpu().numpy()
+    masks = np.asarray(instances.pred_masks.cpu().numpy())
+    selected = [index for index, class_id in enumerate(classes) if int(class_id) in important_classes]
+    if not selected:
+        return np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+
+    return np.max(masks[selected, :, :], axis=0).astype(np.uint8) * 255
 
 
 def predict_important_mask(
     image_path: str | Path,
     *,
     important_classes: tuple[int, ...] = DEFAULT_IMPORTANT_CLASSES,
+    device: str = "cuda",
     score_threshold: float = 0.5,
 ) -> np.ndarray:
     """Predict a combined mask for selected COCO class IDs."""
@@ -49,18 +72,8 @@ def predict_important_mask(
     if image is None:
         raise FileNotFoundError(f"Could not load image: {image_path}")
 
-    predictor = build_predictor(score_threshold=score_threshold)
-    instances = predictor(image)["instances"]
-    if not instances.has("pred_classes") or not instances.has("pred_masks"):
-        return np.zeros(image.shape[:2], dtype=np.uint8)
-
-    classes = instances.pred_classes.cpu().numpy()
-    masks = np.asarray(instances.pred_masks.cpu().numpy())
-    selected = [index for index, class_id in enumerate(classes) if int(class_id) in important_classes]
-    if not selected:
-        return np.zeros(image.shape[:2], dtype=np.uint8)
-
-    return np.max(masks[selected, :, :], axis=0).astype(np.uint8) * 255
+    predictor = build_predictor(device=device, score_threshold=score_threshold)
+    return predict_important_mask_from_image(image, predictor, important_classes=important_classes)
 
 
 def save_mask(mask: np.ndarray, output_path: str | Path) -> Path:

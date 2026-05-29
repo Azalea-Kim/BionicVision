@@ -1,4 +1,4 @@
-"""Split raw DEVA masks into VISOR-guided arm/object/scene masks."""
+"""Evaluation helpers for splitting DEVA masks with VISOR annotations."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from simplification.masks import resize_like
 
 
 @dataclass(frozen=True)
-class DevaSplitConfig:
+class DevaVisorSplitConfig:
     hand_overlap_threshold: float = 0.05
     object_overlap_threshold: float = 0.05
     annotation_coverage_threshold: float = 0.20
@@ -27,7 +27,7 @@ def split_deva_with_visor(
     visor_annotation_path: Path,
     output_dir: Path,
     sampled_source_indices: list[int],
-    config: DevaSplitConfig = DevaSplitConfig(),
+    config: DevaVisorSplitConfig = DevaVisorSplitConfig(),
 ) -> dict[str, list[Path]]:
     """Create arms/scenes/objects binary masks from raw DEVA IDs and VISOR masks."""
 
@@ -70,15 +70,9 @@ def split_frame_ids(
     raw_ids: np.ndarray,
     frame: EpicFrame,
     *,
-    config: DevaSplitConfig,
+    config: DevaVisorSplitConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Split one raw DEVA ID mask using VISOR overlap labels.
-
-    DEVA is class-agnostic. We therefore use VISOR to decide which parts of a
-    DEVA ID are hand/object foreground. Large DEVA IDs often include an entire
-    annotated object but only devote a small fraction of their own area to it;
-    classification must consider annotation coverage, not only instance area.
-    """
+    """Split one raw DEVA ID mask using VISOR overlap labels."""
 
     hand_mask = np.zeros(raw_ids.shape, dtype=np.uint8)
     object_mask = np.zeros(raw_ids.shape, dtype=np.uint8)
@@ -193,6 +187,7 @@ def merge_duplicate_frames(frames: list[EpicFrame]) -> list[EpicFrame]:
                 frame_index=frame_index,
                 image_path=first.image_path,
                 annotations=tuple(annotations),
+                annotation_size=first.annotation_size,
             )
         )
     return merged

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Evaluate Han baseline outputs against the local VISOR subset."""
+"""Evaluate pipeline output directories against the local VISOR subset.
+
+Pipeline outputs must use the shared visual-output contract:
+`<clip>/frames/*.jpg` for sampled RGB inputs and
+`<clip>/combination_frames/*.png` for simplified predictions.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +17,9 @@ from pathlib import Path
 from statistics import mean
 import sys
 
-import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -27,34 +31,59 @@ from evaluation.metrics import EvaluationConfig, evaluate_clip, flow_compensated
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=Path("data/epic_kitchens"))
-    parser.add_argument("--output-root", type=Path, default=Path("outputs/han_baseline_data_first10"))
-    parser.add_argument("--results-dir", type=Path, default=Path("outputs/evaluation/han_baseline_data_first10"))
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--target-fps", type=float, default=20.0)
     parser.add_argument("--strict-frame-count", action="store_true")
     args = parser.parse_args()
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    summaries = []
-    frame_rows = []
-    for clip_dir in sorted(path for path in args.output_root.iterdir() if path.is_dir()):
-        summary, rows = evaluate_baseline_clip(clip_dir, args.data_root, args.target_fps, strict_frame_count=args.strict_frame_count)
-        summaries.append(summary)
-        frame_rows.extend(rows)
+    summaries, frame_rows = evaluate_pipeline_outputs(
+        args.output_root,
+        args.data_root,
+        args.target_fps,
+        strict_frame_count=args.strict_frame_count,
+    )
 
+    args.results_dir.mkdir(parents=True, exist_ok=True)
     summary_path = args.results_dir / "summary.json"
     frame_path = args.results_dir / "frames.csv"
-    summary_path.write_text(json.dumps({"clips": summaries, "aggregate": aggregate(summaries)}, indent=2) + "\n")
+    summary_payload = {"clips": summaries, "aggregate": aggregate(summaries)}
+    summary_path.write_text(json.dumps(summary_payload, indent=2) + "\n")
     with frame_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=frame_rows[0].keys() if frame_rows else [])
+        fieldnames = frame_rows[0].keys() if frame_rows else ()
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(frame_rows)
 
     print(summary_path)
     print(frame_path)
-    print(json.dumps({"clips": summaries, "aggregate": aggregate(summaries)}, indent=2))
+    print(json.dumps(summary_payload, indent=2))
 
 
-def evaluate_baseline_clip(
+def evaluate_pipeline_outputs(
+    output_root: Path,
+    data_root: Path,
+    target_fps: float,
+    *,
+    strict_frame_count: bool = False,
+) -> tuple[list[dict[str, float | int | str | None]], list[dict[str, float | int | str | None]]]:
+    """Evaluate every clip directory in a pipeline output root."""
+
+    summaries = []
+    frame_rows = []
+    for clip_dir in sorted(path for path in output_root.iterdir() if path.is_dir()):
+        summary, rows = evaluate_pipeline_clip(
+            clip_dir,
+            data_root,
+            target_fps,
+            strict_frame_count=strict_frame_count,
+        )
+        summaries.append(summary)
+        frame_rows.extend(rows)
+    return summaries, frame_rows
+
+
+def evaluate_pipeline_clip(
     clip_dir: Path,
     data_root: Path,
     target_fps: float,
@@ -126,29 +155,53 @@ def evaluate_baseline_clip(
         "evaluated_frames": len(selected_annotations),
         "skipped_missing_annotation_frames": len(combination_paths) - len(selected_annotations),
         "foreground_recall": gold_result.foreground_recall,
+        "foreground_overlap": gold_result.foreground_overlap,
         "foreground_total": gold_result.foreground_total,
         "foreground_represented": gold_result.foreground_represented,
         "background_recall": gold_result.background_recall,
+        "background_overlap": gold_result.background_overlap,
         "background_total": gold_result.background_total,
         "background_represented": gold_result.background_represented,
+        "target_pixel_precision": gold_result.target_pixel_precision,
+        "target_pixel_recall": gold_result.target_pixel_recall,
+        "target_pixel_jaccard": gold_result.target_pixel_jaccard,
+        "prediction_pixels": gold_result.prediction_pixels,
+        "target_pixels": gold_result.target_pixels,
+        "target_overlap_pixels": gold_result.target_overlap_pixels,
         "track_dropout_rate": gold_result.track_dropout_rate,
         "object_frame_miss_rate": gold_result.track_dropout_rate,
         "track_fragmentation_rate": gold_result.track_fragmentation_rate,
         "gold_foreground_recall": gold_result.foreground_recall,
+        "gold_foreground_overlap": gold_result.foreground_overlap,
         "gold_foreground_total": gold_result.foreground_total,
         "gold_foreground_represented": gold_result.foreground_represented,
         "gold_background_recall": gold_result.background_recall,
+        "gold_background_overlap": gold_result.background_overlap,
         "gold_background_total": gold_result.background_total,
         "gold_background_represented": gold_result.background_represented,
+        "gold_target_pixel_precision": gold_result.target_pixel_precision,
+        "gold_target_pixel_recall": gold_result.target_pixel_recall,
+        "gold_target_pixel_jaccard": gold_result.target_pixel_jaccard,
+        "gold_prediction_pixels": gold_result.prediction_pixels,
+        "gold_target_pixels": gold_result.target_pixels,
+        "gold_target_overlap_pixels": gold_result.target_overlap_pixels,
         "gold_track_dropout_rate": gold_result.track_dropout_rate,
         "gold_object_frame_miss_rate": gold_result.track_dropout_rate,
         "gold_track_fragmentation_rate": gold_result.track_fragmentation_rate,
         "pseudo_foreground_recall": pseudo_result.foreground_recall,
+        "pseudo_foreground_overlap": pseudo_result.foreground_overlap,
         "pseudo_foreground_total": pseudo_result.foreground_total,
         "pseudo_foreground_represented": pseudo_result.foreground_represented,
         "pseudo_background_recall": pseudo_result.background_recall,
+        "pseudo_background_overlap": pseudo_result.background_overlap,
         "pseudo_background_total": pseudo_result.background_total,
         "pseudo_background_represented": pseudo_result.background_represented,
+        "pseudo_target_pixel_precision": pseudo_result.target_pixel_precision,
+        "pseudo_target_pixel_recall": pseudo_result.target_pixel_recall,
+        "pseudo_target_pixel_jaccard": pseudo_result.target_pixel_jaccard,
+        "pseudo_prediction_pixels": pseudo_result.prediction_pixels,
+        "pseudo_target_pixels": pseudo_result.target_pixels,
+        "pseudo_target_overlap_pixels": pseudo_result.target_overlap_pixels,
         "pseudo_track_dropout_rate": pseudo_result.track_dropout_rate,
         "pseudo_object_frame_miss_rate": pseudo_result.track_dropout_rate,
         "pseudo_track_fragmentation_rate": pseudo_result.track_fragmentation_rate,
@@ -177,9 +230,18 @@ def quality_frame_rows(
             "foreground_total": frame_eval.foreground_total,
             "foreground_represented": frame_eval.foreground_represented,
             "foreground_recall": frame_eval.foreground_recall,
+            "foreground_overlap": frame_eval.foreground_overlap,
             "background_total": frame_eval.background_total,
             "background_represented": frame_eval.background_represented,
             "background_recall": frame_eval.background_recall,
+            "background_overlap": frame_eval.background_overlap,
+            "prediction_active_area": frame_eval.prediction_active_area,
+            "target_pixel_precision": frame_eval.target_pixel_precision,
+            "target_pixel_recall": frame_eval.target_pixel_recall,
+            "target_pixel_jaccard": frame_eval.target_pixel_jaccard,
+            "prediction_pixels": frame_eval.prediction_pixels,
+            "target_pixels": frame_eval.target_pixels,
+            "target_overlap_pixels": frame_eval.target_overlap_pixels,
         }
         for output_index, frame_eval in zip(output_indices, frame_evaluations)
     ]
@@ -256,6 +318,11 @@ def aggregate(summaries: list[dict[str, float | int | str | None]]) -> dict[str,
         "output_active_area",
         "activity_load",
         "flow_compensated_flicker",
+        "foreground_overlap",
+        "background_overlap",
+        "target_pixel_precision",
+        "target_pixel_recall",
+        "target_pixel_jaccard",
     )
     output: dict[str, float | int | str | None] = {
         "clips": len(summaries),
@@ -274,6 +341,15 @@ def aggregate(summaries: list[dict[str, float | int | str | None]]) -> dict[str,
         "pseudo_foreground_represented": sum(int(summary.get("pseudo_foreground_represented", 0)) for summary in summaries),
         "pseudo_background_total": sum(int(summary.get("pseudo_background_total", 0)) for summary in summaries),
         "pseudo_background_represented": sum(int(summary.get("pseudo_background_represented", 0)) for summary in summaries),
+        "prediction_pixels": sum(int(summary.get("prediction_pixels", 0)) for summary in summaries),
+        "target_pixels": sum(int(summary.get("target_pixels", 0)) for summary in summaries),
+        "target_overlap_pixels": sum(int(summary.get("target_overlap_pixels", 0)) for summary in summaries),
+        "gold_prediction_pixels": sum(int(summary.get("gold_prediction_pixels", 0)) for summary in summaries),
+        "gold_target_pixels": sum(int(summary.get("gold_target_pixels", 0)) for summary in summaries),
+        "gold_target_overlap_pixels": sum(int(summary.get("gold_target_overlap_pixels", 0)) for summary in summaries),
+        "pseudo_prediction_pixels": sum(int(summary.get("pseudo_prediction_pixels", 0)) for summary in summaries),
+        "pseudo_target_pixels": sum(int(summary.get("pseudo_target_pixels", 0)) for summary in summaries),
+        "pseudo_target_overlap_pixels": sum(int(summary.get("pseudo_target_overlap_pixels", 0)) for summary in summaries),
     }
     foreground_total = int(output["foreground_total"])
     background_total = int(output["background_total"])
@@ -293,9 +369,36 @@ def aggregate(summaries: list[dict[str, float | int | str | None]]) -> dict[str,
         output[f"{quality}_background_recall"] = (
             int(output[f"{quality}_background_represented"]) / background_total if background_total else None
         )
+        for key in (
+            "foreground_overlap",
+            "background_overlap",
+        ):
+            summary_key = f"{quality}_{key}"
+            values = [float(summary[summary_key]) for summary in summaries if summary[summary_key] is not None]
+            output[summary_key] = mean(values) if values else None
+        prediction_pixels = int(output[f"{quality}_prediction_pixels"])
+        target_pixels = int(output[f"{quality}_target_pixels"])
+        overlap_pixels = int(output[f"{quality}_target_overlap_pixels"])
+        output[f"{quality}_target_pixel_precision"] = (
+            overlap_pixels / prediction_pixels if prediction_pixels else None
+        )
+        output[f"{quality}_target_pixel_recall"] = (
+            overlap_pixels / target_pixels if target_pixels else None
+        )
+        union_pixels = prediction_pixels + target_pixels - overlap_pixels
+        output[f"{quality}_target_pixel_jaccard"] = (
+            overlap_pixels / union_pixels if union_pixels else None
+        )
     for key in simple_keys:
         values = [float(summary[key]) for summary in summaries if summary[key] is not None]
         output[key] = mean(values) if values else None
+    prediction_pixels = int(output["prediction_pixels"])
+    target_pixels = int(output["target_pixels"])
+    overlap_pixels = int(output["target_overlap_pixels"])
+    output["target_pixel_precision"] = overlap_pixels / prediction_pixels if prediction_pixels else None
+    output["target_pixel_recall"] = overlap_pixels / target_pixels if target_pixels else None
+    union_pixels = prediction_pixels + target_pixels - overlap_pixels
+    output["target_pixel_jaccard"] = overlap_pixels / union_pixels if union_pixels else None
     for quality in ("gold", "pseudo"):
         for key in ("track_dropout_rate", "object_frame_miss_rate", "track_fragmentation_rate"):
             summary_key = f"{quality}_{key}"

@@ -48,6 +48,12 @@ class FrameEvaluation:
     represented_ids: frozenset[str]
     foreground_ids: frozenset[str]
     background_ids: frozenset[str]
+    foreground_overlap: float | None
+    background_overlap: float | None
+    prediction_pixels: int
+    target_pixels: int
+    target_overlap_pixels: int
+    frame_pixels: int
 
     @property
     def foreground_recall(self) -> float | None:
@@ -57,6 +63,23 @@ class FrameEvaluation:
     def background_recall(self) -> float | None:
         return _ratio_or_none(self.background_represented, self.background_total)
 
+    @property
+    def target_pixel_precision(self) -> float | None:
+        return _ratio_or_none(self.target_overlap_pixels, self.prediction_pixels)
+
+    @property
+    def target_pixel_recall(self) -> float | None:
+        return _ratio_or_none(self.target_overlap_pixels, self.target_pixels)
+
+    @property
+    def target_pixel_jaccard(self) -> float | None:
+        union = self.prediction_pixels + self.target_pixels - self.target_overlap_pixels
+        return _ratio_or_none(self.target_overlap_pixels, union)
+
+    @property
+    def prediction_active_area(self) -> float:
+        return _ratio_or_none(self.prediction_pixels, self.frame_pixels) or 0.0
+
 
 @dataclass(frozen=True)
 class ClipEvaluation:
@@ -65,6 +88,14 @@ class ClipEvaluation:
     frames: tuple[FrameEvaluation, ...]
     foreground_recall: float | None
     background_recall: float | None
+    foreground_overlap: float | None
+    background_overlap: float | None
+    target_pixel_precision: float | None
+    target_pixel_recall: float | None
+    target_pixel_jaccard: float | None
+    prediction_pixels: int
+    target_pixels: int
+    target_overlap_pixels: int
     track_dropout_rate: float
     output_load: float
     output_active_area: float
@@ -126,12 +157,35 @@ def evaluate_clip(
     background_total = sum(frame.background_total for frame in frame_results)
     foreground = _ratio_or_none(foreground_represented, foreground_total)
     background = _ratio_or_none(background_represented, background_total)
+    foreground_overlap = _weighted_frame_mean(
+        (frame.foreground_overlap, frame.foreground_total) for frame in frame_results
+    )
+    background_overlap = _weighted_frame_mean(
+        (frame.background_overlap, frame.background_total) for frame in frame_results
+    )
+    target_overlap_pixels = sum(frame.target_overlap_pixels for frame in frame_results)
+    prediction_pixels = sum(frame.prediction_pixels for frame in frame_results)
+    target_pixels = sum(frame.target_pixels for frame in frame_results)
+    target_pixel_precision = _ratio_or_none(target_overlap_pixels, prediction_pixels)
+    target_pixel_recall = _ratio_or_none(target_overlap_pixels, target_pixels)
+    target_pixel_jaccard = _ratio_or_none(
+        target_overlap_pixels,
+        prediction_pixels + target_pixels - target_overlap_pixels,
+    )
     activity = active_area(load_frames, threshold=config.active_threshold)
 
     return ClipEvaluation(
         frames=frame_results,
         foreground_recall=foreground,
         background_recall=background,
+        foreground_overlap=foreground_overlap,
+        background_overlap=background_overlap,
+        target_pixel_precision=target_pixel_precision,
+        target_pixel_recall=target_pixel_recall,
+        target_pixel_jaccard=target_pixel_jaccard,
+        prediction_pixels=prediction_pixels,
+        target_pixels=target_pixels,
+        target_overlap_pixels=target_overlap_pixels,
         track_dropout_rate=track_dropout_rate(frame_results),
         output_load=spv_load(load_frames),
         output_active_area=activity,
@@ -212,6 +266,18 @@ def evaluate_frame(
     background_ids = tier.background_interactable_ids & frozenset(object_masks)
     foreground_represented = len(foreground_ids & represented_ids)
     background_represented = len(background_ids & represented_ids)
+    object_scores = {
+        oid: object_overlap_score(mask, prediction, boundary_kernel=config.boundary_kernel)
+        for oid, mask in object_masks.items()
+    }
+    foreground_overlap = _mean_or_none(object_scores[oid] for oid in foreground_ids)
+    background_overlap = _mean_or_none(object_scores[oid] for oid in background_ids)
+    target_mask = _union_masks(
+        (mask for oid, mask in object_masks.items() if oid in (foreground_ids | background_ids)),
+        shape,
+    )
+    pred = prediction > 0
+    target = target_mask > 0
 
     return FrameEvaluation(
         frame_index=tier.frame.frame_index,
@@ -222,7 +288,34 @@ def evaluate_frame(
         represented_ids=represented_ids,
         foreground_ids=foreground_ids,
         background_ids=background_ids,
+        foreground_overlap=foreground_overlap,
+        background_overlap=background_overlap,
+        prediction_pixels=int(np.count_nonzero(pred)),
+        target_pixels=int(np.count_nonzero(target)),
+        target_overlap_pixels=int(np.count_nonzero(pred & target)),
+        frame_pixels=int(np.prod(shape)),
     )
+
+
+def object_overlap_score(
+    object_mask: np.ndarray,
+    prediction_mask: np.ndarray,
+    *,
+    boundary_kernel: int = EvaluationConfig().boundary_kernel,
+) -> float:
+    """Return the best filled-mask or outline overlap without thresholding."""
+
+    obj = as_binary(object_mask) > 0
+    pred = as_binary(prediction_mask) > 0
+    if pred.shape[:2] != obj.shape[:2]:
+        pred = resize_like(pred.astype(np.uint8), obj.astype(np.uint8)) > 0
+    if not np.any(obj):
+        return 0.0
+
+    fill_score = _overlap_score(obj, pred)
+    boundary = object_boundary_band(obj.astype(np.uint8), kernel_size=boundary_kernel) > 0
+    boundary_score = _overlap_score(boundary, pred)
+    return max(fill_score, boundary_score)
 
 
 def object_representation_score(
@@ -451,6 +544,32 @@ def _is_gold_annotation(annotation) -> bool:
 
 def _ratio_or_none(numerator: int, denominator: int) -> float | None:
     return float(numerator / denominator) if denominator else None
+
+
+def _mean_or_none(values) -> float | None:
+    values = [float(value) for value in values]
+    return float(np.mean(values)) if values else None
+
+
+def _weighted_frame_mean(values) -> float | None:
+    numerator = 0.0
+    denominator = 0
+    for value, weight in values:
+        if value is None or weight <= 0:
+            continue
+        numerator += float(value) * int(weight)
+        denominator += int(weight)
+    return numerator / denominator if denominator else None
+
+
+def _union_masks(masks, shape: tuple[int, int]) -> np.ndarray:
+    masks = list(masks)
+    if not masks:
+        return np.zeros(shape, dtype=np.uint8)
+    output = np.zeros(masks[0].shape[:2], dtype=np.uint8)
+    for mask in masks:
+        output = np.maximum(output, as_binary(mask))
+    return output
 
 
 def _normalize_fixed(frame: np.ndarray) -> np.ndarray:

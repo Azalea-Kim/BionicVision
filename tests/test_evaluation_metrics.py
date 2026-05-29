@@ -79,6 +79,7 @@ class EvaluationMetricTests(unittest.TestCase):
         pred1 = np.zeros((30, 30), dtype=np.uint8)
         pred1[0:5, 0:5] = 255
         pred1[20:25, 20:25] = 255
+        pred1[10:12, 10:12] = 255
         pred2 = np.zeros((30, 30), dtype=np.uint8)
         pred2[20:25, 20:25] = 255
 
@@ -92,6 +93,9 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertEqual(result.foreground_total, 3)
         self.assertEqual(result.background_represented, 1)
         self.assertEqual(result.background_total, 1)
+        self.assertLess(result.target_pixel_precision, 1.0)
+        self.assertGreater(result.target_pixel_recall, 0.0)
+        self.assertGreater(result.frames[0].foreground_overlap, 0.0)
         self.assertGreater(result.output_load, 0)
         self.assertEqual(result.activity_load, result.output_active_area)
 

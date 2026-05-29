@@ -21,12 +21,15 @@ import numpy as np
 from PIL import Image, ImageFilter
 from skimage import morphology
 import torch
-import torchvision.transforms as transforms
 
+from models.depth.cached import load_depth
+from models.depth.monodepth2.adapter import predict_depth_folder
+from models.saliency.deepgaze2.adapter import compute_saliency
+from models.segmentation.detectron2.adapter import build_predictor, predict_important_mask_from_image
+from models.segmentation.mit_scene_parsing.adapter import build_scene_module, predict_labels
+from simplification.fusion import baseline_fusion
 
 ROOT = Path(__file__).resolve().parents[2]
-EXTERNAL = ROOT / "external" / "model_sources"
-PYTHON = ROOT / ".venv-models" / "bin" / "python"
 DEFAULT_CLIP_DIR = ROOT / "data" / "epic_kitchens" / "clips_10s"
 DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "han_baseline_epic10"
 
@@ -190,37 +193,21 @@ def gen_image_brightness(
 
 
 def build_depth_frames(frame_dir: Path, output_dir: Path, config: HanBaselineConfig) -> list[Path]:
-    monodepth_root = EXTERNAL / "depth" / "monodepth2"
-    work_dir = output_dir / "monodepth2_work"
-    if work_dir.exists():
-        shutil.rmtree(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    for frame in sorted(frame_dir.glob("*.jpg")):
-        shutil.copy2(frame, work_dir / frame.name)
-
-    command = [
-        str(PYTHON),
-        "test_simple.py",
-        "--image_path",
-        str(work_dir),
-        "--model_name",
-        config.monodepth_model_name,
-        "--ext",
-        "jpg",
-        "--pred_metric_depth",
-    ]
-    if config.device == "cpu":
-        command.append("--no_cuda")
-    subprocess.run(command, cwd=monodepth_root, check=True)
-
     depth_frame_dir = output_dir / "frames"
     if depth_frame_dir.exists():
         shutil.rmtree(depth_frame_dir)
     depth_frame_dir.mkdir(parents=True, exist_ok=True)
 
     output_paths: list[Path] = []
-    for depth_path in sorted(work_dir.glob("*_depth.npy")):
-        depth = np.squeeze(np.load(depth_path)).astype(np.float32)
+    depth_paths = predict_depth_folder(
+        frame_dir=frame_dir,
+        output_dir=output_dir,
+        model_name=config.monodepth_model_name,
+        device=config.device,
+    )
+    for depth_path in depth_paths:
+        frame_stem = depth_path.stem.removesuffix("_depth")
+        depth = np.squeeze(load_depth(depth_path, mmap=True)).astype(np.float32)
         vmax = np.percentile(depth, config.depth_clip_percentile)
         depth = depth.copy()
         depth[depth > vmax] = vmax
@@ -231,15 +218,23 @@ def build_depth_frames(frame_dir: Path, output_dir: Path, config: HanBaselineCon
             min_brightness=config.depth_min_brightness,
             max_brightness=config.depth_max_brightness,
         )
-        out = depth_frame_dir / f"{depth_path.stem.removesuffix('_depth')}.png"
+        source_frame_path = frame_dir / f"{frame_stem}.jpg"
+        source_frame = cv2.imread(str(source_frame_path))
+        if source_frame is None:
+            raise FileNotFoundError(source_frame_path)
+        if image.shape[:2] != source_frame.shape[:2]:
+            image = cv2.resize(
+                image,
+                (source_frame.shape[1], source_frame.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        out = depth_frame_dir / f"{frame_stem}.png"
         cv2.imwrite(str(out), image)
         output_paths.append(out)
     return output_paths
 
 
 def build_saliency_frames(frame_paths: list[Path], output_dir: Path, config: HanBaselineConfig) -> list[Path]:
-    from deepgaze.saliency_map import FasaSaliencyMapping
-
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -249,41 +244,11 @@ def build_saliency_frames(frame_paths: list[Path], output_dir: Path, config: Han
         frame = cv2.imread(str(frame_path))
         if frame is None:
             raise FileNotFoundError(frame_path)
-        h, w = frame.shape[:2]
-        saliency = FasaSaliencyMapping(h, w).returnMask(frame, tot_bins=config.saliency_bins, format="BGR2LAB")
-        saliency = cv2.GaussianBlur(saliency, (3, 3), 1)
+        saliency = compute_saliency(frame, total_bins=config.saliency_bins)
         out = output_dir / f"{frame_path.stem}.png"
         cv2.imwrite(str(out), saliency)
         output_paths.append(out)
     return output_paths
-
-
-def build_mit_scene_module(device: torch.device):
-    from mit_semseg.models import ModelBuilder, SegmentationModule
-
-    weights = ROOT / "data" / "model_weights" / "mit_scene_parsing" / "ade20k-resnet50dilated-ppm_deepsup"
-    encoder = ModelBuilder.build_encoder(arch="resnet50dilated", fc_dim=2048, weights=str(weights / "encoder_epoch_20.pth"))
-    decoder = ModelBuilder.build_decoder(
-        arch="ppm_deepsup",
-        fc_dim=2048,
-        num_class=150,
-        weights=str(weights / "decoder_epoch_20.pth"),
-        use_softmax=True,
-    )
-    return SegmentationModule(encoder, decoder, torch.nn.NLLLoss(ignore_index=-1)).to(device).eval()
-
-
-def build_detectron_predictor(device: torch.device, score_threshold: float):
-    from detectron2 import model_zoo
-    from detectron2.config import get_cfg
-    from detectron2.engine import DefaultPredictor
-
-    cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.MODEL.DEVICE = device.type
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_threshold
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
-    return DefaultPredictor(cfg)
 
 
 def get_houghlines(edges: np.ndarray, config: HanBaselineConfig) -> np.ndarray:
@@ -301,12 +266,8 @@ def get_houghlines(edges: np.ndarray, config: HanBaselineConfig) -> np.ndarray:
 
 def build_segmentation_frames(frame_paths: list[Path], output_dir: Path, config: HanBaselineConfig) -> list[Path]:
     device = ensure_cuda_if_requested(config.device)
-    segmentation_module = build_mit_scene_module(device)
-    predictor = build_detectron_predictor(device, config.detectron_score_threshold)
-    normalize = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    segmentation_module = build_scene_module(device=device.type)
+    predictor = build_predictor(device=device.type, score_threshold=config.detectron_score_threshold)
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -323,12 +284,7 @@ def build_segmentation_frames(frame_paths: list[Path], output_dir: Path, config:
     output_paths: list[Path] = []
     for count, frame_path in enumerate(frame_paths, start=1):
         pil_image = Image.open(frame_path).convert("RGB")
-        img_data = normalize(pil_image)
-        singleton_batch = {"img_data": img_data[None].to(device)}
-        with torch.no_grad():
-            scores = segmentation_module(singleton_batch, segSize=img_data.shape[1:])
-        _, pred = torch.max(scores, dim=1)
-        pred = pred.cpu()[0].numpy()
+        pred = predict_labels(pil_image, segmentation_module, device=device.type)
 
         pred_clean = pred.copy()
         pred_clean[~np.isin(pred_clean, config.structure_class_ids)] = 0
@@ -351,14 +307,15 @@ def build_segmentation_frames(frame_paths: list[Path], output_dir: Path, config:
         image_bgr = cv2.imread(str(frame_path))
         if image_bgr is None:
             raise FileNotFoundError(frame_path)
-        instances = predictor(image_bgr)["instances"]
-        masks = np.asarray(instances.pred_masks.cpu().numpy()) if instances.has("pred_masks") else None
-        classes = instances.pred_classes.cpu().numpy() if instances.has("pred_classes") else np.array([])
-        selected = [index for index, class_id in enumerate(classes) if int(class_id) in config.important_coco_classes]
-        if masks is None or not selected:
+        object_mask = predict_important_mask_from_image(
+            image_bgr,
+            predictor,
+            important_classes=config.important_coco_classes,
+        )
+        if not np.any(object_mask):
             masks_comb = edges
         else:
-            masks_comb = np.max(masks[selected, :, :], axis=0).astype(np.uint8) * 255
+            masks_comb = object_mask
 
         out = output_dir / f"{frame_path.stem}.png"
         cv2.imwrite(str(out), masks_comb.astype(np.uint8))
@@ -383,19 +340,12 @@ def combine_frames(saliency_paths: list[Path], segmentation_paths: list[Path], d
         sal = read_gray_frame(sal_path)
         seg = read_gray_frame(seg_path)
         dep = read_gray_frame(dep_path)
-        threshold = float(np.max(sal)) * config.saliency_threshold_fraction
-        sal_fil = sal.copy()
-        sal_fil[sal_fil <= threshold] = 0
-        sal_fil[sal_fil > 0] = 255
-        sal_norm = cv2.normalize(sal_fil, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        seg_norm = cv2.normalize(seg, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        dep_norm = cv2.normalize(dep, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        seg_norm = cv2.resize(seg_norm, (sal_norm.shape[1], sal_norm.shape[0]))
-        dep_norm = cv2.resize(dep_norm, (sal_norm.shape[1], sal_norm.shape[0]))
-        seg_sal = np.max((sal_norm, seg_norm), axis=0)
-        dep_seg_sal = dep_norm.copy()
-        dep_seg_sal[seg_sal == 0] = 0
-        result = (dep_seg_sal * 255).astype(np.uint8)
+        result = baseline_fusion(
+            segmentation=seg,
+            saliency=sal,
+            depth=dep,
+            saliency_threshold_fraction=config.saliency_threshold_fraction,
+        )
         out = output_dir / f"frame{index:05d}.png"
         cv2.imwrite(str(out), result)
         output_paths.append(out)
